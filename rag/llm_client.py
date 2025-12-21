@@ -1,46 +1,37 @@
 import time
-from google import genai
-from google.genai import types, errors
+from openai import OpenAI
 
 
 class LLMClient:
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
-        self.client = genai.Client(api_key=api_key)
+    def __init__(self, api_key: str, model: str):
+        self.client = OpenAI(api_key=api_key)
         self.model = model
 
-    def _is_complete(self, text: str) -> bool:
-        if not text:
-            return False
-
-        text = text.strip()
-        complete_endings = (".", "?", "!", '"', "'", "”", "’", ")", "]", "}")
-        return text.endswith(complete_endings)
-
     def ask(self, prompt: str, attempt: int = 1, last_text: str | None = None) -> str:
+        """
+        Calls OpenAI Responses API with retries on transient failures.
+        """
         if attempt > 5:
-            return last_text or "⚠️ Service is temporarily unavailable. This may be due to exceeding his LLM plan’s request limit or a network connection issue. Please check your internet and try again shortly."
-        config = types.GenerateContentConfig(
-            max_output_tokens=512,
-            temperature=0
-        )
+            return last_text or (
+                "⚠️ The LLM service is temporarily unavailable. "
+                "Please check your internet connection and try again shortly."
+            )
 
         try:
-            response = self.client.models.generate_content(
+            response = self.client.responses.create(
                 model=self.model,
-                contents=prompt,
-                config=config
+                input=prompt,
             )
-            text = getattr(response, "text", None)
-            if text and self._is_complete(text):
+
+            text = getattr(response, "output_text", None)
+            if text:
                 return text
-            
-            time.sleep(0.5 * attempt)  
-            return self.ask(prompt, attempt + 1, text or last_text)
 
-        except errors.ClientError as e:
+            # If for some reason output_text is empty, retry
             time.sleep(0.5 * attempt)
-            return self.ask(prompt, attempt + 1, last_text)
+            return self.ask(prompt, attempt + 1, last_text=last_text)
+
         except Exception:
+            # Treat as transient and retry with backoff
             time.sleep(0.5 * attempt)
-            return self.ask(prompt, attempt + 1, last_text)
-
+            return self.ask(prompt, attempt + 1, last_text=last_text)
