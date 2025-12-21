@@ -1,92 +1,117 @@
 import streamlit as st
 
 def setup_page():
-    st.set_page_config(page_title="Haroon GPT", page_icon="🤖", layout="wide")
+    st.set_page_config(page_title="Thyroid Cancer RAG Assistant", page_icon="🩺", layout="wide")
 
 def inject_custom_css():
     st.markdown("""
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        body, .stApp {
-            background: linear-gradient(135deg, rgba(0,0,0,0.6), rgba(0,0,0,0.8)), linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-            color: white !important;
+        /* ---------- Global ---------- */
+        .stApp {
+            background: #0b0f14 !important;  /* ChatGPT-like dark */
+            color: #e6edf3 !important;
         }
-        #MainMenu, header, footer {visibility: hidden;}
+        #MainMenu, header, footer { visibility: hidden; }
+
+        /* Reduce excessive top padding */
+        .block-container {
+            padding-top: 1rem;
+            padding-bottom: 7rem; /* space for chat input */
+            max-width: 950px;
+        }
+
+        /* ---------- Title ---------- */
         .main-title {
             text-align: center;
-            color: white;
-            font-size: 2.5rem;
-            font-weight: bold;
-            padding-top: 5px;
-            margin-bottom: 20px;
-            text-shadow: 2px 2px 6px rgba(255,255,255,0.6);
+            color: #e6edf3;
+            font-size: 2.0rem;
+            font-weight: 700;
+            margin: 0.5rem 0 1.25rem 0;
         }
-        .block-container {padding-bottom: 120px;}
-        .user-message {display: flex; justify-content: flex-end; margin: 12px 0;}
-        .user-icon {font-size: 2rem; margin-left: 10px; color: white;}
+        .subtitle {
+            text-align: center;
+            color: #9aa4b2;
+            margin-top: -0.75rem;
+            margin-bottom: 1.5rem;
+            font-size: 0.95rem;
+        }
+
+        /* ---------- Message bubbles ---------- */
+        .user-message, .bot-message {
+            display: flex;
+            margin: 12px 0;
+            gap: 10px;
+            align-items: flex-start;
+        }
+
+        .user-message { justify-content: flex-end; }
+        .bot-message  { justify-content: flex-start; }
+
+        .user-icon, .bot-icon {
+            font-size: 1.4rem;
+            line-height: 1.4rem;
+            opacity: 0.9;
+            margin-top: 2px;
+        }
+
+        .user-content, .bot-content {
+            padding: 12px 14px;
+            border-radius: 14px;
+            max-width: 72%;
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: none;
+            white-space: pre-wrap;
+        }
+
+        /* user bubble slightly lighter */
         .user-content {
-            background: rgba(255,255,255,0.18);
-            color: white;
-            padding: 12px 16px;
-            border-radius: 20px 20px 6px 20px;
-            max-width: 70%;
-            backdrop-filter: blur(5px);
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            background: #111827; /* slate-ish */
+            color: #e6edf3;
+            border-top-right-radius: 6px;
         }
-        .bot-message {display: flex; justify-content: flex-start; margin: 12px 0;}
-        .bot-icon {font-size: 2rem; margin-right: 10px; color: white;}
+
+        /* assistant bubble slightly darker */
         .bot-content {
-            background: rgba(255,255,255,0.22);
-            color: white;
-            padding: 12px 16px;
-            border-radius: 20px 20px 20px 6px;
-            max-width: 70%;
-            backdrop-filter: blur(6px);
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            background: #0f172a; /* deeper slate */
+            color: #e6edf3;
+            border-top-left-radius: 6px;
         }
+
+        /* ---------- Typing / thinking ---------- */
         .typing-indicator {
             display: inline-block;
-            animation: typing 1.5s infinite;
+            color: #9aa4b2;
             font-style: italic;
             font-size: 0.9rem;
+            animation: typing 1.5s infinite;
         }
-        @keyframes typing {0%, 100% {opacity: 0.3;} 50% {opacity: 1;}}
-        @keyframes slideInLeft {from {opacity: 0; transform: translateX(-40px);} to {opacity: 1; transform: translateX(0);}}
-        @keyframes slideInRight {from {opacity: 0; transform: translateX(40px);} to {opacity: 1; transform: translateX(0);}}
-        
-        .stChatInput textarea st-emotion-cache-x1bvup exaa2ht1 {
-            background: white !important;
-            color: black !important;
-            border-radius: 5px !important;
+        @keyframes typing { 0%, 100% {opacity: 0.35;} 50% {opacity: 1;} }
+
+        /* ---------- Chat input styling (best-effort, stable selectors) ---------- */
+        /* Streamlit uses a textarea inside the chat input; target it directly */
+        [data-testid="stChatInput"] textarea {
+            background: #0f172a !important;
+            color: #e6edf3 !important;
+            border: 1px solid rgba(255,255,255,0.12) !important;
+            border-radius: 12px !important;
         }
-        .st-emotion-cache-128upt6, .st-emotion-cache-hzygls {
-            padding-bottom: 20px !important;
-            background-color: transparent !important;
+
+        [data-testid="stChatInput"] textarea:focus {
+            border: 1px solid rgba(255,255,255,0.22) !important;
             box-shadow: none !important;
+            outline: none !important;
         }
-        .neon-loader {
-            margin: 100px auto;
-            width: 120px;
-            height: 120px;
-            border-radius: 50%;
-            border: 5px solid rgba(255,255,255,0.2);
-            border-top: 5px solid #ffffff;
-            animation: glowRotate 1.2s linear infinite;
-            box-shadow: 0 0 25px rgba(255,255,255,0.6);
+
+        /* Buttons (if any) */
+        .stButton>button {
+            border-radius: 10px;
         }
-        @keyframes glowRotate {
-            0% {transform: rotate(0deg); box-shadow: 0 0 15px white;}
-            100% {transform: rotate(360deg); box-shadow: 0 0 25px white;}
-        }
-        .neon-text {
-            text-align: center;
-            color: white;
-            margin-top: 20px;
-            font-size: 1.2rem;
-            text-shadow: 0 0 8px rgba(255,255,255,0.7);
-        }
+
+        /* Links */
+        a { color: #7dd3fc !important; }
     </style>
     """, unsafe_allow_html=True)
 
 def page_title():
-    st.markdown('<h1 class="main-title">🤖 Haroon GPT</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-title">🩺 Thyroid Cancer RAG Assistant</h1>', unsafe_allow_html=True)
+    st.markdown('<div class="subtitle">Ask questions and receive evidence-grounded answers from retrieved literature excerpts.</div>', unsafe_allow_html=True)
