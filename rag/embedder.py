@@ -6,11 +6,20 @@ class Embedder:
         self.model = SentenceTransformer(model_name)
 
     def encode(self, texts, batch_size=32):
-        vectors = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            vectors.append(self.model.encode(batch, convert_to_numpy=True))
-        return np.vstack(vectors)
+        vectors = self.model.encode(
+            texts,
+            batch_size=batch_size,
+            convert_to_numpy=True,
+            normalize_embeddings=True,  # good for cosine similarity
+            show_progress_bar=False
+        )
+        return vectors
 
     def encode_query(self, query: str):
-        return self.model.encode([query], convert_to_numpy=True)
+        vec = self.model.encode(
+            query,
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        )
+        # vec is already 1D when encoding a single string
+        return vec
