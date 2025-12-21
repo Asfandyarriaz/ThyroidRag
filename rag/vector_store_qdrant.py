@@ -10,35 +10,42 @@ class QdrantVectorStore:
         self.collection_name = collection_name
         self.embedder = embedder
 
-    def search(self, query_text: str, k: int = 5, vector_name: str = "Default vector") -> List[str]:
-        try:
-            if self.embedder is None:
-                raise ValueError("Embedder is not initialized. Cannot encode query text.")
+    def search(self, query_text: str, k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Returns a list of retrieved items with text + metadata for citations.
+        """
+        if self.embedder is None:
+            raise ValueError("Embedder is not initialized. Cannot encode query text.")
 
-            query_vector_raw = self.embedder.encode_query(query_text)
+        # SentenceTransformers usually uses .encode()
+        query_vector = self.embedder.encode(query_text)
 
-            if isinstance(query_vector_raw, np.ndarray) and query_vector_raw.ndim == 2:
-                query_vector = query_vector_raw[0]
-            else:
-                query_vector = query_vector_raw
+        # Normalize output shape
+        if isinstance(query_vector, np.ndarray) and query_vector.ndim == 2:
+            query_vector = query_vector[0]
 
-            if isinstance(query_vector, np.ndarray):
-                query_vector = query_vector.tolist()
+        if isinstance(query_vector, np.ndarray):
+            query_vector = query_vector.tolist()
 
-            response: Any = self.client.query_points(
-                collection_name=self.collection_name,
-                query=query_vector,
-                limit=k,
-                with_payload=True
-            )
+        response: Any = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            limit=k,
+            with_payload=True,
+            with_vectors=False,
+        )
 
-            results: List[str] = []
-            for hit in response.points:
-                payload: Dict[str, Any] = hit.payload or {}
-                text_content: Optional[str] = payload.get("text")
-                if text_content is not None:
-                    results.append(str(text_content))
-            return results
-        except Exception as e:
-            logging.error(f"Error during vector search: {e}")
-            return ["⚠️ Something went wrong while retrieving information. Please check your internet connection and try again."]
+        results: List[Dict[str, Any]] = []
+        for hit in response.points:
+            payload: Dict[str, Any] = hit.payload or {}
+
+            results.append({
+                "text": payload.get("text", ""),
+                "title": payload.get("title", ""),
+                "pmid": payload.get("pmid", None),
+                "year": payload.get("year", None),
+                "evidence_level": payload.get("evidence_level", None),
+                "score": getattr(hit, "score", None),
+            })
+
+        return results
