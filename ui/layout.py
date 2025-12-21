@@ -1,7 +1,11 @@
 import streamlit as st
 
 def setup_page():
-    st.set_page_config(page_title="Thyroid Cancer RAG Assistant", page_icon="🩺", layout="wide")
+    st.set_page_config(
+        page_title="Thyroid Cancer RAG Assistant",
+        page_icon="🩺",
+        layout="wide"
+    )
 
 def inject_custom_css():
     st.markdown("""
@@ -10,8 +14,8 @@ def inject_custom_css():
            Global (ChatGPT-like dark)
            ========================= */
         html, body, .stApp {
-            background: #111827 !important;   /* dark gray, NOT pitch black */
-            color: #E5E7EB !important;        /* light gray text */
+            background: #111827 !important;   /* dark gray (not pitch black) */
+            color: #E5E7EB !important;        /* light text */
         }
 
         #MainMenu, header, footer { visibility: hidden; }
@@ -19,7 +23,7 @@ def inject_custom_css():
         .block-container {
             max-width: 950px;
             padding-top: 1rem;
-            padding-bottom: 6.5rem; /* leave room for input */
+            padding-bottom: 6.5rem; /* space for input */
         }
 
         /* Title */
@@ -87,46 +91,63 @@ def inject_custom_css():
         }
         @keyframes typing { 0%, 100% {opacity: 0.35;} 50% {opacity: 1;} }
 
+        /* Make markdown readable */
+        .stMarkdown, .stMarkdown p, .stMarkdown li {
+            color: #E5E7EB !important;
+        }
+        a { color: #7DD3FC !important; }
+
         /* =========================
-           Chat input (fix unreadable textbox)
+           Chat input (fix white wrapper + full dark background)
            ========================= */
 
-        /* The entire chat input block */
+        /* Remove default backgrounds around chat input */
         [data-testid="stChatInput"] {
             background: transparent !important;
         }
 
-        /* The textarea itself */
-        [data-testid="stChatInput"] textarea {
-            background: #0B1220 !important;
-            color: #E5E7EB !important;
-            caret-color: #E5E7EB !important;
+        /* BaseWeb wrapper that often appears as a white rectangle */
+        [data-testid="stChatInput"] [data-baseweb="textarea"] {
+            background: #0B1220 !important; /* dark background covers whole input */
             border: 1px solid rgba(255,255,255,0.14) !important;
             border-radius: 12px !important;
+            box-shadow: none !important;
         }
 
-        /* Placeholder text */
+        /* Make textarea itself transparent so wrapper background shows fully */
+        [data-testid="stChatInput"] textarea {
+            background: transparent !important;
+            color: #E5E7EB !important;
+            caret-color: #E5E7EB !important;
+            width: 100% !important;
+        }
+
+        /* Placeholder */
         [data-testid="stChatInput"] textarea::placeholder {
             color: #9CA3AF !important;
             opacity: 1 !important;
         }
 
-        /* Focus state */
-        [data-testid="stChatInput"] textarea:focus {
+        /* Focus styling (on wrapper) */
+        [data-testid="stChatInput"] [data-baseweb="textarea"]:focus-within {
             border: 1px solid rgba(255,255,255,0.28) !important;
             box-shadow: 0 0 0 1px rgba(255,255,255,0.10) !important;
-            outline: none !important;
         }
 
-        /* Make markdown readable */
-        .stMarkdown, .stMarkdown p, .stMarkdown li {
-            color: #E5E7EB !important;
+        /* Extra wrappers sometimes add background */
+        [data-testid="stChatInput"] > div,
+        [data-testid="stChatInput"] > div > div {
+            background: transparent !important;
         }
-
-        a { color: #7DD3FC !important; }
     </style>
     """, unsafe_allow_html=True)
 
 def page_title():
-    st.markdown('<h1 class="main-title">🩺 Thyroid Cancer RAG Assistant</h1>', unsafe_allow_html=True)
-    st.markdown('<div class="subtitle">Ask questions and get evidence-grounded answers from retrieved literature excerpts.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<h1 class="main-title">🩺 Thyroid Cancer RAG Assistant</h1>',
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        '<div class="subtitle">Ask questions and get evidence-grounded answers from retrieved literature excerpts.</div>',
+        unsafe_allow_html=True
+    )
