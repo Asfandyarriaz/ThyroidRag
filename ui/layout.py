@@ -10,170 +10,231 @@ def setup_page():
 def inject_custom_css():
     st.markdown("""
     <style>
-        /* =========================
-           ChatGPT-like neutral dark theme
-           ========================= */
+        /* Modern ChatGPT-inspired dark theme */
         :root {
-            --bg: #0f0f0f;               /* main background */
-            --panel: #141414;            /* assistant bubble + input wrapper */
-            --panel2: #1b1b1b;           /* user bubble */
-            --text: #f9fafb;             /* near-white */
-            --muted: #c7ced6;            /* placeholder/secondary */
-            --border: rgba(255,255,255,0.10);
+            --bg-main: #212121;
+            --bg-chat: #2f2f2f;
+            --bg-user: #3b3b3b;
+            --bg-assistant: #2a2a2a;
+            --text-primary: #ececec;
+            --text-secondary: #b4b4b4;
+            --border: rgba(255,255,255,0.1);
+            --accent: #10a37f;
+            --input-bg: #40414f;
         }
 
-        html, body {
-            background: var(--bg) !important;
-            color: var(--text) !important;
+        /* Main app background */
+        .stApp {
+            background-color: var(--bg-main) !important;
         }
 
-        /* Streamlit containers that sometimes keep a bluish theme */
-        .stApp,
-        [data-testid="stAppViewContainer"],
-        [data-testid="stMain"],
-        [data-testid="stHeader"],
-        [data-testid="stToolbar"],
-        [data-testid="stDecoration"] {
-            background: var(--bg) !important;
-            color: var(--text) !important;
+        /* Hide Streamlit branding */
+        #MainMenu, header, footer {
+            visibility: hidden;
         }
 
-        /* Optional: sidebar */
-        [data-testid="stSidebar"] {
-            background: var(--bg) !important;
-            color: var(--text) !important;
-            border-right: 1px solid var(--border) !important;
-        }
-
-        #MainMenu, header, footer { visibility: hidden; }
-
+        /* Container spacing */
         .block-container {
-            max-width: 950px;
-            padding-top: 1rem;
-            padding-bottom: 6.5rem; /* space for input */
+            max-width: 900px;
+            padding: 2rem 1rem 8rem 1rem;
         }
 
-        /* Title */
+        /* Title styling */
         .main-title {
             text-align: center;
-            color: var(--text);
-            font-size: 2.0rem;
-            font-weight: 700;
-            margin: 0.5rem 0 0.25rem 0;
+            color: var(--text-primary);
+            font-size: 2.2rem;
+            font-weight: 600;
+            margin: 1rem 0 0.5rem 0;
+            letter-spacing: -0.5px;
         }
+
         .subtitle {
             text-align: center;
-            color: rgba(249,250,251,0.72);
-            margin: 0 0 1.25rem 0;
-            font-size: 0.95rem;
+            color: var(--text-secondary);
+            font-size: 1rem;
+            margin: 0 0 2rem 0;
+            font-weight: 400;
         }
 
-        /* =========================
-           Chat bubbles
-           ========================= */
+        /* Chat message containers */
         .user-message, .bot-message {
             display: flex;
-            margin: 12px 0;
-            gap: 10px;
+            gap: 12px;
+            margin: 1.5rem 0;
             align-items: flex-start;
         }
-        .user-message { justify-content: flex-end; }
-        .bot-message  { justify-content: flex-start; }
 
+        .user-message {
+            justify-content: flex-end;
+        }
+
+        .bot-message {
+            justify-content: flex-start;
+        }
+
+        /* Icons */
         .user-icon, .bot-icon {
-            font-size: 1.2rem;
-            opacity: 0.95;
-            margin-top: 2px;
+            font-size: 1.3rem;
+            min-width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            flex-shrink: 0;
         }
 
-        .user-content, .bot-content {
-            padding: 12px 14px;
-            border-radius: 14px;
-            max-width: 75%;
+        .user-icon {
+            background: var(--accent);
+        }
+
+        .bot-icon {
+            background: var(--bg-assistant);
             border: 1px solid var(--border);
-            white-space: pre-wrap;
-            line-height: 1.45;
         }
 
-        /* User bubble */
+        /* Message bubbles */
+        .user-content, .bot-content {
+            padding: 14px 16px;
+            border-radius: 16px;
+            max-width: 70%;
+            line-height: 1.6;
+            word-wrap: break-word;
+        }
+
         .user-content {
-            background: var(--panel2);
-            color: var(--text);
-            border-top-right-radius: 6px;
+            background: var(--bg-user);
+            color: var(--text-primary);
+            border-bottom-right-radius: 4px;
         }
 
-        /* Assistant bubble */
         .bot-content {
-            background: var(--panel);
-            color: var(--text);
-            border-top-left-radius: 6px;
+            background: var(--bg-assistant);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: 4px;
         }
 
-        /* Thinking indicator */
+        /* Typing indicator */
         .typing-indicator {
-            color: rgba(249,250,251,0.70);
+            color: var(--text-secondary);
             font-style: italic;
             font-size: 0.95rem;
-            animation: typing 1.5s infinite;
-        }
-        @keyframes typing { 0%, 100% {opacity: 0.35;} 50% {opacity: 1;} }
-
-        /* Make markdown readable */
-        .stMarkdown, .stMarkdown p, .stMarkdown li {
-            color: var(--text) !important;
+            padding: 0.5rem;
+            animation: pulse 1.5s ease-in-out infinite;
         }
 
-        a { color: #7ab7ff !important; }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
 
-        /* =========================
-           Chat input (no white wrapper, full dark, white typing)
-           ========================= */
+        /* Fix Streamlit markdown colors */
+        .stMarkdown, .stMarkdown p, .stMarkdown li, .stMarkdown span {
+            color: var(--text-primary) !important;
+        }
 
-        /* remove any default background around chat input */
+        /* Links */
+        a {
+            color: #58a6ff !important;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        /* ===== CHAT INPUT FIXES ===== */
+        
+        /* Remove any Streamlit default backgrounds */
         [data-testid="stChatInput"] {
             background: transparent !important;
+            position: fixed !important;
+            bottom: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            padding: 1rem !important;
+            background: var(--bg-main) !important;
+            border-top: 1px solid var(--border) !important;
+            z-index: 999 !important;
         }
 
-        /* BaseWeb wrapper (this is often the “white rectangle”) */
-        [data-testid="stChatInput"] [data-baseweb="textarea"] {
-            background: var(--panel) !important;
-            border: 1px solid rgba(255,255,255,0.14) !important;
+        /* Input wrapper */
+        [data-testid="stChatInput"] > div {
+            max-width: 900px !important;
+            margin: 0 auto !important;
+            background: transparent !important;
+        }
+
+        /* BaseWeb textarea container - THIS IS KEY */
+        [data-testid="stChatInput"] [data-baseweb="base-input"] {
+            background-color: var(--input-bg) !important;
+            border: 1px solid rgba(255,255,255,0.15) !important;
             border-radius: 12px !important;
-            box-shadow: none !important;
         }
 
-        /* textarea itself: transparent so wrapper background covers full area */
+        /* The actual textarea */
         [data-testid="stChatInput"] textarea {
-            background: transparent !important;
-            color: var(--text) !important;
-            caret-color: var(--text) !important;
-            -webkit-text-fill-color: var(--text) !important; /* fixes grey text */
-            font-weight: 500 !important;
-            width: 100% !important;
+            background-color: transparent !important;
+            color: var(--text-primary) !important;
+            font-size: 15px !important;
+            padding: 12px 16px !important;
+            border: none !important;
+            caret-color: var(--text-primary) !important;
         }
 
-        /* placeholder: slightly dimmer but readable */
+        /* Placeholder text */
         [data-testid="stChatInput"] textarea::placeholder {
-            color: var(--muted) !important;
-            opacity: 1 !important;
+            color: var(--text-secondary) !important;
+            opacity: 0.7 !important;
         }
 
-        /* focus styling on wrapper */
-        [data-testid="stChatInput"] [data-baseweb="textarea"]:focus-within {
-            border: 1px solid rgba(255,255,255,0.28) !important;
-            box-shadow: 0 0 0 1px rgba(255,255,255,0.10) !important;
+        /* Focus state */
+        [data-testid="stChatInput"] [data-baseweb="base-input"]:focus-within {
+            border-color: rgba(255,255,255,0.3) !important;
+            box-shadow: 0 0 0 2px rgba(255,255,255,0.05) !important;
         }
 
-        /* sometimes extra wrappers add background */
-        [data-testid="stChatInput"] > div,
-        [data-testid="stChatInput"] > div > div {
-            background: transparent !important;
+        /* Override any Streamlit autocomplete styling */
+        [data-testid="stChatInput"] input:-webkit-autofill,
+        [data-testid="stChatInput"] textarea:-webkit-autofill {
+            -webkit-text-fill-color: var(--text-primary) !important;
+            -webkit-box-shadow: 0 0 0px 1000px var(--input-bg) inset !important;
         }
 
-        /* ensure nothing inside wrapper forces grey text */
-        [data-testid="stChatInput"] [data-baseweb="textarea"] * {
-            color: var(--text) !important;
-            -webkit-text-fill-color: var(--text) !important;
+        /* Send button styling */
+        [data-testid="stChatInput"] button {
+            background-color: transparent !important;
+            color: var(--text-secondary) !important;
+            border: none !important;
+            padding: 8px !important;
+        }
+
+        [data-testid="stChatInput"] button:hover {
+            color: var(--text-primary) !important;
+            background-color: rgba(255,255,255,0.1) !important;
+        }
+
+        /* Code blocks in messages */
+        code {
+            background-color: rgba(0,0,0,0.3) !important;
+            color: #ff6b6b !important;
+            padding: 2px 6px !important;
+            border-radius: 4px !important;
+            font-family: 'Courier New', monospace !important;
+        }
+
+        pre {
+            background-color: rgba(0,0,0,0.3) !important;
+            padding: 12px !important;
+            border-radius: 8px !important;
+            overflow-x: auto !important;
+        }
+
+        pre code {
+            background-color: transparent !important;
+            padding: 0 !important;
         }
     </style>
     """, unsafe_allow_html=True)
