@@ -144,6 +144,19 @@ ENV/
 env.bak/
 venv.bak/
 
+# Streamlit secrets (never commit)
+.streamlit/secrets.toml
+secrets.toml
+
+# Parquet / data files (optional: add if you store datasets locally)
+*.parquet
+*.csv
+
+# Local OS files
+.DS_Store
+Thumbs.db
+
+
 # Spyder project settings
 .spyderproject
 .spyproject
