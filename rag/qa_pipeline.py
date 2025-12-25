@@ -56,24 +56,25 @@ class QAPipeline:
             lines.append(f"{role}: {content}")
         return "\n".join(lines).strip()
 
-    def _format_excerpts(self, retrieved: List[Dict[str, Any]]) -> str:
-        """
-        Format retrieved chunks into numbered excerpts for citation like [1], [2], ...
-        """
-        parts = []
-        for i, item in enumerate(retrieved, start=1):
-            title = item.get("title", "") or ""
-            pmid = item.get("pmid", "")
-            year = item.get("year", "")
-            evidence = item.get("evidence_level", "")
-            text = item.get("text", "") or ""
+    def _format_excerpts(self, retrieved):
+    parts = []
+    for i, item in enumerate(retrieved, start=1):
+        title = (item.get("title") or "").strip()
+        year = item.get("year")
+        pmid = item.get("pmid")
+        evidence = item.get("evidence_level")
 
-            parts.append(
-                f"[{i}] Title: {title}\n"
-                f"PMID: {pmid} | Year: {year} | Evidence level: {evidence}\n"
-                f"Excerpt:\n{text}"
-            )
-        return "\n\n".join(parts).strip()
+        # Short label the model can use consistently
+        source_label = f"{title} ({year})" if title and year else (title or f"Source {i}")
+
+        text = (item.get("text") or "").strip()
+
+        parts.append(
+            f"SOURCE {i}: {source_label}\n"
+            f"PMID: {pmid} | Year: {year} | Evidence level: {evidence}\n"
+            f"EXCERPT:\n{text}"
+        )
+    return "\n\n".join(parts).strip()
 
     def answer(self, question: str, chat_history: list = None, k: int = 5) -> str:
         try:
