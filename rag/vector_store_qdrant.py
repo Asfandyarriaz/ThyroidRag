@@ -1,4 +1,4 @@
-from typing import Any, Optional, List, Dict
+from typing import Any, List, Dict
 import numpy as np
 import logging
 
@@ -11,41 +11,40 @@ class QdrantVectorStore:
         self.embedder = embedder
 
     def search(self, query_text: str, k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Returns a list of retrieved items with text + metadata for citations.
-        """
         if self.embedder is None:
-            raise ValueError("Embedder is not initialized. Cannot encode query text.")
+            raise ValueError("Embedder is not initialized.")
 
-        # SentenceTransformers usually uses .encode()
-        query_vector = self.embedder.encode(query_text)
+        # Use your Embedder.encode_query (returns numpy vector)
+        query_vec = self.embedder.encode_query(query_text)
 
-        # Normalize output shape
-        if isinstance(query_vector, np.ndarray) and query_vector.ndim == 2:
-            query_vector = query_vector[0]
+        if isinstance(query_vec, np.ndarray) and query_vec.ndim == 2:
+            query_vec = query_vec[0]
 
-        if isinstance(query_vector, np.ndarray):
-            query_vector = query_vector.tolist()
+        if isinstance(query_vec, np.ndarray):
+            query_vec = query_vec.tolist()
 
-        response: Any = self.client.query_points(
-            collection_name=self.collection_name,
-            query=query_vector,
-            limit=k,
-            with_payload=True,
-            with_vectors=False,
-        )
+        try:
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vec,
+                limit=k,
+                with_payload=True,
+                with_vectors=False,
+            )
 
-        results: List[Dict[str, Any]] = []
-        for hit in response.points:
-            payload: Dict[str, Any] = hit.payload or {}
+            results: List[Dict[str, Any]] = []
+            for hit in response.points:
+                payload = hit.payload or {}
+                results.append({
+                    "text": payload.get("text", ""),
+                    "title": payload.get("title", ""),
+                    "pmid": payload.get("pmid", None),
+                    "year": payload.get("year", None),
+                    "evidence_level": payload.get("evidence_level", None),
+                    "score": getattr(hit, "score", None),
+                })
+            return results
 
-            results.append({
-                "text": payload.get("text", ""),
-                "title": payload.get("title", ""),
-                "pmid": payload.get("pmid", None),
-                "year": payload.get("year", None),
-                "evidence_level": payload.get("evidence_level", None),
-                "score": getattr(hit, "score", None),
-            })
-
-        return results
+        except Exception as e:
+            logging.error(f"Error during vector search: {e}")
+            return []
