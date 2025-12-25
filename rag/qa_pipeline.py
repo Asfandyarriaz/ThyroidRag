@@ -218,11 +218,11 @@ class QAPipeline:
 
         max_excerpts = 8
         shown = 0
-        for i, c in enumerate(chunks, start=1):
+        for c in chunks:
             txt = (c.get("text") or "").strip()
             if not txt:
                 continue
-            lines.append(f"- Excerpt {shown+1}: {txt}")
+            lines.append(f"- Excerpt {shown + 1}: {txt}")
             shown += 1
             if shown >= max_excerpts:
                 break
@@ -232,16 +232,16 @@ class QAPipeline:
 
         return "\n".join(lines)
 
-    # ------------------ NEW: 2-pass summary for cohesion ------------------
+    # ------------------ 2-pass summary for cohesion ------------------
 
     def _generate_definition(self, question: str, excerpts: str) -> str:
-    """
-    Definition section:
-    - Prefer an explicit definition if present.
-    - If not present, allow a short 'working definition' derived ONLY from the excerpts,
-      clearly labeled and still cited.
-    """
-    prompt_def = f"""
+        """
+        Definition section:
+        - Prefer an explicit definition if present.
+        - If not present, allow a short 'working definition' derived ONLY from the excerpts,
+          clearly labeled and still cited.
+        """
+        prompt_def = f"""
 {self.instruction_text}
 
 Retrieved excerpts (use ONLY these):
@@ -267,7 +267,7 @@ Rules:
   A clear definition is not explicitly provided in the retrieved excerpts.
 """.strip()
 
-    return self.llm.ask(prompt_def).strip()
+        return self.llm.ask(prompt_def).strip()
 
     def _extract_facts(self, question: str, excerpts: str) -> str:
         """Pass 1: extract atomic facts (bullets) with citations, no prose."""
@@ -299,7 +299,7 @@ Rules:
         return self.llm.ask(prompt_extract).strip()
 
     def _rewrite_summary(self, facts_text: str) -> str:
-        """Pass 2: rewrite extracted facts into cohesive prose without adding facts."""
+        """Pass 2: rewrite extracted facts into cohesive bullet summary without adding facts."""
         prompt_rewrite = f"""
 You are rewriting for clarity and cohesion.
 
@@ -307,23 +307,23 @@ Input facts (do not add anything new):
 {facts_text}
 
 Task:
-Write a cohesive, easy-to-read summary (4–8 sentences) using ONLY the facts above.
+Rewrite the facts into a more cohesive set of 3–6 bullets that are easier to read.
 - Keep the same meaning.
 - Do NOT introduce any new facts, numbers, study names, or medical recommendations.
-- Preserve citations by keeping each citation attached to the sentence that uses that fact.
-- If a sentence includes multiple facts from different sources, include all relevant citations.
+- Preserve citations by keeping each citation attached to the bullet that uses that fact.
+- If a bullet combines multiple facts from different sources, include all relevant citations.
 
 Output format (exactly):
 B) Summary
-- <bullet 1 sentence> (Title, Year)
-- <bullet 2 sentence> (Title, Year)
-- <bullet 3 sentence> (Title, Year)
+- <bullet> (Title, Year)
+- <bullet> (Title, Year)
+- <bullet> (Title, Year)
 (3–6 bullets total)
 """.strip()
         return self.llm.ask(prompt_rewrite).strip()
 
     def _generate_evidence_quotes(self, question: str, excerpts: str) -> str:
-        """Pass 3: verbatim quotes supporting key points."""
+        """Pass 3: verbatim quotes supporting key points (avoid duplicates; correct PMID formatting)."""
         prompt_quotes = f"""
 Retrieved excerpts (use ONLY these):
 {excerpts}
@@ -337,13 +337,14 @@ Provide 3–6 short direct quotes copied exactly from the excerpts that support 
 Rules:
 - Quotes must be word-for-word from the excerpts.
 - Each quote must be <= 35 words.
-- After each quote, include (Title, Year, PMID).
-- Do not add any text besides the quotes.
 - Do not repeat the same idea twice (no duplicate or near-duplicate quotes).
 - Prefer quotes that cover different key points.
+- After each quote, include (Title, Year, PMID: <PMID>).
+- Do not add any text besides the quotes.
 
 Output format (exactly):
 C) Verbatim evidence
+- "<quote>" (Title, Year, PMID: <PMID>)
 - "<quote>" (Title, Year, PMID: <PMID>)
 """.strip()
         return self.llm.ask(prompt_quotes).strip()
@@ -389,7 +390,6 @@ C) Verbatim evidence
 
             excerpts = self._format_excerpts(retrieved)
 
-            # ---- Build response via 2-pass summary + quotes ----
             definition_section = self._generate_definition(question, excerpts)
 
             facts = self._extract_facts(question, excerpts)
@@ -401,8 +401,12 @@ C) Verbatim evidence
 
             final_answer = f"{definition_section}\n\n{summary_section}\n\n{evidence_section}".strip()
 
-            # If formatting slips, force a rewrite (rare, but helps UX)
-            if "A) Definition" not in final_answer or "B) Summary" not in final_answer or "C) Verbatim evidence" not in final_answer:
+            # If formatting slips, force a rewrite (rare but helps UX)
+            if (
+                "A) Definition" not in final_answer
+                or "B) Summary" not in final_answer
+                or "C) Verbatim evidence" not in final_answer
+            ):
                 fix_prompt = f"""
 Rewrite the answer to follow EXACTLY this format:
 
@@ -415,7 +419,7 @@ B) Summary
 (3–6 bullets)
 
 C) Verbatim evidence
-- "..." (Title, Year, PMID)
+- "..." (Title, Year, PMID: <PMID>)
 (3–6 quotes)
 
 Do NOT add new facts. Use ONLY the content already present in the draft below.
