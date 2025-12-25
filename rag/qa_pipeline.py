@@ -120,22 +120,30 @@ Retrieved excerpts (use ONLY these):
 User question:
 {question}
 
-OUTPUT FORMAT (must follow exactly):
+OUTPUT FORMAT (follow exactly):
 
-1) Summary (paraphrase):
-- Provide a short, clear summary that paraphrases ONLY what is supported by the excerpts.
-- After each key sentence, cite using (Title, Year). Example: (Smith et al., 2021)
+A) Definition (1–2 sentences)
+- If the retrieved excerpts contain an explicit definition (e.g., “Thyroid cancer is …”), write it as a short definition.
+- If no explicit definition is present, write:
+  "A clear definition is not explicitly provided in the retrieved excerpts."
+- End this section with a citation like (Title, Year) if any statement is supported; otherwise no citation.
 
-2) Verbatim evidence (word-for-word):
+B) Summary (paraphrase, 3–6 bullet points)
+- Summarize ONLY what the excerpts support.
+- Prefer: what it is, key characteristics, common subtypes mentioned, epidemiology/outcomes if present.
+- After EACH bullet, cite using (Title, Year). Example: (Smith et al., 2021)
+
+C) Verbatim evidence (word-for-word quotes)
 - Provide 3–6 short direct quotes copied exactly from the excerpts.
-- Each quote must be attributed with (Title, Year, PMID).
-- Keep each quote short (1–2 sentences maximum).
+- Each quote must be ≤ 35 words.
+- After each quote, attribute with (Title, Year, PMID).
 
 Rules:
 - Use ONLY the retrieved excerpts. Do not use outside knowledge.
-- If insufficient information is present, respond exactly:
+- If the excerpts do not support any meaningful answer, respond exactly:
   Not enough evidence in the retrieved sources.
 - Do not invent guideline names, statistics, or recommendations.
+- Do not cite sources not present in the excerpts.
 
 Answer:
 """.strip()
