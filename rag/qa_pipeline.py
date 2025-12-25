@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,7 +20,6 @@ class QAPipeline:
         self.vector_store = vector_store
         self.llm = llm_client
 
-        # Detect environment (default = local)
         env = os.getenv("ENV", "local").lower()
         if env == "prod":
             base_dir = Path(__file__).parent
@@ -61,10 +61,26 @@ class QAPipeline:
             lines.append(f"{role}: {content}")
         return "\n".join(lines).strip()
 
+    def _is_definition_question(self, q: str) -> bool:
+        q = q.strip().lower()
+        return (
+            q.startswith("what is ")
+            or q.startswith("define ")
+            or q.startswith("explain ")
+            or q.startswith("what are ")
+        )
+
+    def _extract_term(self, q: str) -> str:
+        """
+        Best-effort term extraction for query rewrite.
+        Example: "What is thyroid cancer?" -> "thyroid cancer"
+        """
+        q2 = q.strip().lower()
+        q2 = re.sub(r"[?!.]+$", "", q2)
+        q2 = re.sub(r"^(what is|define|explain|what are)\s+", "", q2).strip()
+        return q2
+
     def _format_excerpts(self, retrieved: List[Dict[str, Any]]) -> str:
-        """
-        Formats retrieved items into labeled sources the model can cite as (Title, Year).
-        """
         parts: List[str] = []
         for i, item in enumerate(retrieved, start=1):
             title = (item.get("title") or "").strip()
@@ -72,7 +88,6 @@ class QAPipeline:
             pmid = item.get("pmid", "")
             evidence = item.get("evidence_level", "")
 
-            source_label = ""
             if title and year:
                 source_label = f"{title} ({year})"
             elif title:
@@ -94,11 +109,18 @@ class QAPipeline:
         try:
             chat_context = self._format_chat_history(chat_history)
 
-            retrieved = self.vector_store.search(question, k=k)
+            # ---- Better retrieval for definition-style questions ----
+            retrieval_query = question
+            if self._is_definition_question(question):
+                k = max(k, 10)  # grab more context to find an explicit definition
+                term = self._extract_term(question)
+                if term:
+                    retrieval_query = f"definition of {term}"
 
-            # If vector store still returns strings, convert to dict format (no metadata)
+            retrieved = self.vector_store.search(retrieval_query, k=k)
+
+            # If vector store returns plain strings, convert to dicts (metadata missing)
             if retrieved and isinstance(retrieved[0], str):
-                # preserve old-style error string behavior if it exists
                 if len(retrieved) == 1 and retrieved[0].startswith("⚠️"):
                     return retrieved[0]
                 retrieved = [{"text": t} for t in retrieved]
@@ -123,15 +145,15 @@ User question:
 OUTPUT FORMAT (follow exactly):
 
 A) Definition (1–2 sentences)
-- If the retrieved excerpts contain an explicit definition (e.g., “Thyroid cancer is …”), write it as a short definition.
-- If no explicit definition is present, write:
-  "A clear definition is not explicitly provided in the retrieved excerpts."
-- End this section with a citation like (Title, Year) if any statement is supported; otherwise no citation.
+- If the retrieved excerpts contain an explicit definition (e.g., “X is …”), write it as a short definition.
+- If NO explicit definition is present, you MUST write exactly:
+  A clear definition is not explicitly provided in the retrieved excerpts.
+- End this section with a citation like (Title, Year) ONLY if the sentence is supported by an excerpt.
 
 B) Summary (paraphrase, 3–6 bullet points)
 - Summarize ONLY what the excerpts support.
 - Prefer: what it is, key characteristics, common subtypes mentioned, epidemiology/outcomes if present.
-- After EACH bullet, cite using (Title, Year). Example: (Smith et al., 2021)
+- After EACH bullet, cite using (Title, Year).
 
 C) Verbatim evidence (word-for-word quotes)
 - Provide 3–6 short direct quotes copied exactly from the excerpts.
