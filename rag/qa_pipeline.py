@@ -235,8 +235,13 @@ class QAPipeline:
     # ------------------ NEW: 2-pass summary for cohesion ------------------
 
     def _generate_definition(self, question: str, excerpts: str) -> str:
-        """Pass 0: strict definition extraction (or required fallback line)."""
-        prompt_def = f"""
+    """
+    Definition section:
+    - Prefer an explicit definition if present.
+    - If not present, allow a short 'working definition' derived ONLY from the excerpts,
+      clearly labeled and still cited.
+    """
+    prompt_def = f"""
 {self.instruction_text}
 
 Retrieved excerpts (use ONLY these):
@@ -253,12 +258,16 @@ A) Definition
 - <1–2 sentences>
 
 Rules:
-- Use ONLY explicit definitional wording present in the excerpts (e.g., "X is ...").
-- If NO explicit definition is present, write exactly:
+- Prefer an explicit definition from the excerpts (e.g., “X is …”).
+- If there is NO explicit definition, you MUST write a *working definition derived only from what the excerpts say*.
+  Start the sentence with: "Based on the retrieved sources, ..."
+- Do NOT add any medical facts that are not stated or directly implied by the excerpts.
+- End each sentence with citations in the form (Title, Year) if supported.
+- If even a working definition is not possible from the excerpts, write exactly:
   A clear definition is not explicitly provided in the retrieved excerpts.
-- If you include any factual statement from the excerpts, cite at the end of the sentence as (Title, Year).
 """.strip()
-        return self.llm.ask(prompt_def).strip()
+
+    return self.llm.ask(prompt_def).strip()
 
     def _extract_facts(self, question: str, excerpts: str) -> str:
         """Pass 1: extract atomic facts (bullets) with citations, no prose."""
@@ -330,11 +339,12 @@ Rules:
 - Each quote must be <= 35 words.
 - After each quote, include (Title, Year, PMID).
 - Do not add any text besides the quotes.
+- Do not repeat the same idea twice (no duplicate or near-duplicate quotes).
+- Prefer quotes that cover different key points.
 
 Output format (exactly):
 C) Verbatim evidence
-- "<quote>" (Title, Year, PMID)
-- "<quote>" (Title, Year, PMID)
+- "<quote>" (Title, Year, PMID: <PMID>)
 """.strip()
         return self.llm.ask(prompt_quotes).strip()
 
