@@ -107,14 +107,27 @@ Retrieved excerpts (use ONLY these):
 User question:
 {question}
 
-Answering rules:
-- Use ONLY the retrieved excerpts.
-- If insufficient information is present, respond exactly: "Not enough evidence in the retrieved sources."
-- Cite after every key statement using excerpt numbers like [1], [2].
-- Do not introduce guideline names or facts not stated in the excerpts.
+OUTPUT FORMAT (must follow exactly):
+
+1) Summary (paraphrase):
+- Provide a short, clear summary that paraphrases ONLY what is supported by the excerpts.
+- After each key sentence, cite using (Title, Year). Example: (Smith et al., 2021)
+
+2) Verbatim evidence (word-for-word):
+- Provide 3–6 short direct quotes copied exactly from the excerpts.
+- Each quote must be attributed with (Title, Year, PMID).
+- Keep each quote short (1–2 sentences maximum).
+
+Rules:
+- Use ONLY the retrieved excerpts. Do not use outside knowledge.
+- If the excerpts do not contain enough information, respond exactly:
+  Not enough evidence in the retrieved sources.
+- Do not invent guideline names, statistics, or recommendations.
+- Do not cite sources not present in the excerpts.
 
 Answer:
 """.strip()
+
 
             response = self.llm.ask(prompt)
             return response
