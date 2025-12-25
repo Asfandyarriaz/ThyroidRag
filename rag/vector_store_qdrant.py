@@ -14,12 +14,10 @@ class QdrantVectorStore:
         if self.embedder is None:
             raise ValueError("Embedder is not initialized.")
 
-        # Use your Embedder.encode_query (returns numpy vector)
         query_vec = self.embedder.encode_query(query_text)
 
         if isinstance(query_vec, np.ndarray) and query_vec.ndim == 2:
             query_vec = query_vec[0]
-
         if isinstance(query_vec, np.ndarray):
             query_vec = query_vec.tolist()
 
@@ -39,6 +37,7 @@ class QdrantVectorStore:
                     "text": payload.get("text", ""),
                     "title": payload.get("title", ""),
                     "pmid": payload.get("pmid", None),
+                    "doi": payload.get("doi", None),
                     "year": payload.get("year", None),
                     "evidence_level": payload.get("evidence_level", None),
                     "score": getattr(hit, "score", None),
