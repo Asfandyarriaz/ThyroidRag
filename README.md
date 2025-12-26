@@ -2,6 +2,8 @@
 
 Thyroid Cancer RAG Assistant is a lightweight chat-style web app for querying a curated thyroid cancer literature dataset. It uses a Retrieval-Augmented Generation (RAG) pipeline to retrieve relevant excerpts from a Qdrant vector database and generate evidence-grounded answers with a large language model.
 
+🌐 **Live App:** https://thyroidraggit-mvsu5jmnjtkvxvve86emk2.streamlit.app/
+
 ⚠️ **Disclaimer:** This project is for research and educational purposes only and does **not** provide medical advice. Always consult clinical guidelines and qualified healthcare professionals for clinical decisions.
 
 ## Features
@@ -24,6 +26,7 @@ Thyroid Cancer RAG Assistant is a lightweight chat-style web app for querying a 
 5. The LLM generates an answer grounded in the retrieved excerpts.
 
 ## Deployment
-This app is designed to be deployed on **Streamlit Community Cloud**
+This app is designed to be deployed on **Streamlit Community Cloud**.
+
 ## Acknowledgements
 This project is part of an academic workflow to explore RAG-based question answering over thyroid cancer literature.
