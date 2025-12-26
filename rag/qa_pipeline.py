@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 logging.basicConfig(level=logging.INFO)
 
-# ---- Minimal intent routing (keeps scope thyroid-only, but handles meta/paper requests) ----
+# ---- Minimal intent routing ----
 META_PHRASES = [
     "tell me about yourself",
     "who are you",
@@ -55,7 +55,7 @@ EVIDENCE_PHRASES = [
 SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
 LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
 
-# Scope keywords (thyroid cancer only)
+# Thyroid-only scope keywords
 THYROID_KEYWORDS = [
     "thyroid", "thyroid cancer", "thyroid carcinoma",
     "papillary", "ptc",
@@ -78,7 +78,7 @@ def _norm(text: str) -> str:
     """Lowercase + strip punctuation to make intent matching robust."""
     t = (text or "").strip().lower()
     t = re.sub(r"[\s]+", " ", t)
-    t = re.sub(r"[^\w\s]", "", t)  # remove punctuation
+    t = re.sub(r"[^\w\s]", "", t)
     return t
 
 
@@ -108,6 +108,8 @@ class QAPipeline:
         self.agent_instructions = self._load_instruction(agent_path)
         self.instruction_text = self._combine_instructions()
 
+    # ------------------ Utilities ------------------
+
     def _load_instruction(self, file_path: Path) -> str:
         if not file_path.exists():
             logging.warning(f"Instruction file {file_path} not found.")
@@ -119,22 +121,12 @@ class QAPipeline:
             return ""
 
     def _combine_instructions(self) -> str:
-        parts = []
+        parts: List[str] = []
         if self.agent_instructions:
             parts.append(self.agent_instructions)
         if self.rag_instructions:
             parts.append(self.rag_instructions)
         return "\n\n".join(parts).strip()
-
-    def _format_chat_history(self, chat_history: Optional[list]) -> str:
-        if not chat_history:
-            return ""
-        lines: List[str] = []
-        for msg in chat_history:
-            role = "User" if msg.get("role") == "user" else "Assistant"
-            content = msg.get("content", "")
-            lines.append(f"{role}: {content}")
-        return "\n".join(lines).strip()
 
     def _is_meta_question(self, q: str) -> bool:
         qn = _norm(q)
@@ -148,35 +140,6 @@ class QAPipeline:
         qn = _norm(q)
         return any(_norm(k) in qn for k in THYROID_KEYWORDS)
 
-    def _is_definition_question(self, q: str) -> bool:
-    qn = _norm(q)
-    return (
-        qn.startswith("what is")
-        or qn.startswith("define")
-        or qn.startswith("explain")
-        or qn.startswith("tell me about")
-        or qn.startswith("overview of")
-        or qn.startswith("describe")
-    )
-
-    def _extract_term(self, q: str) -> str:
-        qn = q.strip()
-        qn = re.sub(r"[?!.]+$", "", qn).strip()
-        ql = qn.lower()
-        for prefix in ("what is", "define", "explain"):
-            if ql.startswith(prefix):
-                return qn[len(prefix):].strip()
-        return qn.strip()
-
-    def _extract_pmid(self, q: str) -> Optional[int]:
-        m = re.search(r"\bpmid\b[:\s]*([0-9]{6,10})\b", (q or "").lower())
-        if m:
-            try:
-                return int(m.group(1))
-            except Exception:
-                return None
-        return None
-
     def _wants_evidence(self, q: str) -> bool:
         qn = _norm(q)
         return any(p in qn for p in EVIDENCE_PHRASES)
@@ -189,12 +152,27 @@ class QAPipeline:
         qn = _norm(q)
         return any(p in qn for p in LONG_PREF_PHRASES)
 
+    def _is_definition_question(self, q: str) -> bool:
+        """
+        Treat 'tell me about ...' and 'overview of ...' as overview/definition intent too,
+        so retrieval becomes more reliable.
+        """
+        qn = _norm(q)
+        return (
+            qn.startswith("what is")
+            or qn.startswith("define")
+            or qn.startswith("explain")
+            or qn.startswith("tell me about")
+            or qn.startswith("overview of")
+            or qn.startswith("describe")
+        )
+
     def _select_mode(self, q: str) -> str:
         """
         Modes:
-          - "evidence": include quotes
-          - "standard": default longer structured answer
-          - "short": shorter answer for simple questions
+          - evidence: include verbatim quotes
+          - standard: longer structured answer
+          - short: shorter answer for simple questions (default for short prompts)
         """
         if self._wants_evidence(q):
             return "evidence"
@@ -203,16 +181,31 @@ class QAPipeline:
         if self._wants_short(q):
             return "short"
 
-        # Heuristic: short for simple/definition-style questions
         qn = _norm(q)
-        word_count = len(qn.split())
-        if self._is_definition_question(q) or qn.startswith("tell me about"):
-            if word_count <= 8:
-                return "short"
-        if word_count <= 6:
+        wc = len(qn.split())
+        if self._is_definition_question(q) and wc <= 10:
             return "short"
-
+        if wc <= 6:
+            return "short"
         return "standard"
+
+    def _extract_term(self, q: str) -> str:
+        qn = q.strip()
+        qn = re.sub(r"[?!.]+$", "", qn).strip()
+        ql = qn.lower()
+        for prefix in ("what is", "define", "explain", "tell me about", "overview of", "describe"):
+            if ql.startswith(prefix):
+                return qn[len(prefix):].strip()
+        return qn.strip()
+
+    def _extract_pmid(self, q: str) -> Optional[int]:
+        m = re.search(r"\bpmid\b[:\s]*([0-9]{6,10})\b", (q or "").lower())
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
+        return None
 
     def _format_excerpts(self, retrieved: List[Dict[str, Any]]) -> str:
         parts: List[str] = []
@@ -284,8 +277,8 @@ class QAPipeline:
             txt = (c.get("text") or "").strip()
             if not txt:
                 continue
-            lines.append(f"- Excerpt {shown + 1}: {txt}")
             shown += 1
+            lines.append(f"- Excerpt {shown}: {txt}")
             if shown >= max_excerpts:
                 break
 
@@ -294,17 +287,10 @@ class QAPipeline:
 
         return "\n".join(lines)
 
-    # ------------------ Answer construction ------------------
+    # ------------------ Generation helpers ------------------
 
     def _generate_definition(self, question: str, excerpts: str, mode: str) -> str:
-        """
-        Definition section:
-        - Prefer explicit definition if present.
-        - Otherwise allow a short "working definition" derived ONLY from excerpts.
-        - In short mode: aim for 1 sentence; otherwise 1–2 sentences.
-        """
         max_sentences = "1" if mode == "short" else "2"
-
         prompt_def = f"""
 {self.instruction_text}
 
@@ -330,7 +316,6 @@ Rules:
 - If even a working definition is not possible from the excerpts, write exactly:
   A clear definition is not explicitly provided in the retrieved excerpts.
 """.strip()
-
         return self.llm.ask(prompt_def).strip()
 
     def _extract_facts(self, question: str, excerpts: str, max_facts: int) -> str:
@@ -359,7 +344,6 @@ Rules:
 - If insufficient info, output exactly:
   Not enough evidence in the retrieved sources.
 """.strip()
-
         return self.llm.ask(prompt_extract).strip()
 
     def _rewrite_summary(self, facts_text: str, min_bullets: int, max_bullets: int) -> str:
@@ -381,7 +365,6 @@ B) Summary
 - <bullet> (Title, Year)
 - <bullet> (Title, Year)
 """.strip()
-
         return self.llm.ask(prompt_rewrite).strip()
 
     def _generate_evidence_quotes(self, question: str, excerpts: str, max_quotes: int) -> str:
@@ -408,14 +391,13 @@ Output format (exactly):
 C) Verbatim evidence
 - "<quote>" (Title, Year, PMID: <PMID>)
 """.strip()
-
         return self.llm.ask(prompt_quotes).strip()
 
-    # --------------------------------------------------------------------
+    # ------------------ Main entry ------------------
 
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 5) -> str:
         try:
-            # 1) Meta questions: answer directly (no retrieval)
+            # Meta questions: answer directly (no retrieval)
             if self._is_meta_question(question):
                 return (
                     "I’m the assistant inside **Thyroid Cancer RAG Assistant**.\n\n"
@@ -425,7 +407,7 @@ C) Verbatim evidence
                     "radioiodine (RAI), follow-up, recurrence, and prognosis."
                 )
 
-            # 2) Keep scope thyroid-cancer-only
+            # Scope: thyroid-only
             if not self._is_in_scope(question):
                 return (
                     "I’m scoped to **thyroid cancer** questions only.\n\n"
@@ -433,29 +415,29 @@ C) Verbatim evidence
                     "surgery, radioiodine (RAI), follow-up, or recurrence."
                 )
 
-            # 3) Paper request mode (details + links + available excerpts)
+            # Paper request mode
             if self._is_paper_request(question):
                 requested_pmid = self._extract_pmid(question)
                 retrieved = self.vector_store.search(question, k=max(k, 10))
                 return self._paper_lookup_response(retrieved, requested_pmid)
 
-            # 4) Choose answer mode
-            mode = self._select_mode(question)
-            # mode in {"short","standard","evidence"}
+            # Select answer mode
+            mode = self._select_mode(question)  # "short" | "standard" | "evidence"
 
-            # 5) Retrieval tuning
+            # Build retrieval query
             retrieval_query = question
             if self._is_definition_question(question):
                 term = self._extract_term(question)
                 retrieval_query = f"definition of {term}" if term else retrieval_query
 
-            # more context for longer/evidence mode
+            # Retrieval depth by mode
             if mode == "short":
-                k = max(k, 6)
+                k = max(k, 8)
             else:
                 k = max(k, 12)
 
             retrieved = self.vector_store.search(retrieval_query, k=k)
+
             # Fallback retry for broad/overview queries
             if not retrieved:
                 term = self._extract_term(question)
@@ -467,7 +449,7 @@ C) Verbatim evidence
 
             excerpts = self._format_excerpts(retrieved)
 
-            # 6) Build response
+            # Generate sections
             definition_section = self._generate_definition(question, excerpts, mode=mode)
 
             if mode == "short":
@@ -475,10 +457,7 @@ C) Verbatim evidence
                 if facts.strip() == "Not enough evidence in the retrieved sources.":
                     return facts.strip()
                 summary_section = self._rewrite_summary(facts, min_bullets=2, max_bullets=3)
-
                 final_answer = f"{definition_section}\n\n{summary_section}".strip()
-
-                # If user explicitly asked for evidence, include it (but in short mode we don't by default)
                 return final_answer
 
             # standard/evidence
@@ -493,50 +472,6 @@ C) Verbatim evidence
                 final_answer = f"{definition_section}\n\n{summary_section}\n\n{evidence_section}".strip()
             else:
                 final_answer = f"{definition_section}\n\n{summary_section}".strip()
-
-            # 7) Basic format enforcement (keeps UI predictable)
-            if mode == "evidence":
-                if "A) Definition" not in final_answer or "B) Summary" not in final_answer or "C) Verbatim evidence" not in final_answer:
-                    fix_prompt = f"""
-Rewrite the answer to follow EXACTLY this format:
-
-A) Definition
-- ...
-
-B) Summary
-- ...
-- ...
-(3–6 bullets)
-
-C) Verbatim evidence
-- "..." (Title, Year, PMID: <PMID>)
-(3–6 quotes)
-
-Do NOT add new facts. Use ONLY the content already present in the draft below.
-
-DRAFT:
-{final_answer}
-""".strip()
-                    final_answer = self.llm.ask(fix_prompt).strip()
-            else:
-                if "A) Definition" not in final_answer or "B) Summary" not in final_answer:
-                    fix_prompt = f"""
-Rewrite the answer to follow EXACTLY this format:
-
-A) Definition
-- ...
-
-B) Summary
-- ...
-- ...
-(2–6 bullets depending on content)
-
-Do NOT add new facts. Use ONLY the content already present in the draft below.
-
-DRAFT:
-{final_answer}
-""".strip()
-                    final_answer = self.llm.ask(fix_prompt).strip()
 
             return final_answer
 
