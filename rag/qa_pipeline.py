@@ -3,7 +3,9 @@ import os
 import re
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from rapidfuzz import fuzz, process
 
 logging.basicConfig(level=logging.INFO)
 
@@ -55,26 +57,26 @@ EVIDENCE_PHRASES = [
 SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
 LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
 
-# Thyroid-only scope keywords
-THYROID_KEYWORDS = [
-    "thyroid", "thyroid cancer", "thyroid carcinoma",
-    "papillary", "ptc",
-    "follicular", "ftc",
-    "medullary", "mtc",
-    "anaplastic", "atc",
-    "thyroid nodule", "nodule",
-    "tirads", "ti-rads", "tbsrtc",
-    "ultrasound", "sono", "echogenic", "microcalcification",
-    "biopsy", "fine needle", "fna",
-    "radioiodine", "rai", "131i", "iodine ablation", "ablation",
-    "thyroglobulin", "tsh", "levothyroxine",
-    "neck dissection", "thyroidectomy", "lobectomy",
-    "metastasis", "lymph node",
-    "braf", "ras", "ret", "molecular",
+# Thyroid-only scope anchors (keep this fairly small/high-signal to avoid false positives)
+SCOPE_ANCHORS = [
+    "thyroid",
+    "thyroid cancer",
+    "thyroid carcinoma",
+    "papillary thyroid carcinoma",
+    "follicular thyroid carcinoma",
+    "medullary thyroid carcinoma",
+    "anaplastic thyroid carcinoma",
+    "thyroid nodule",
+    "tirads",
+    "fine needle aspiration",
+    "radioiodine",
+    "thyroidectomy",
+    "braf",
+    "ret",
 ]
 
 # Evidence level -> name + weight (higher = higher confidence)
-EVIDENCE_LEVEL_INFO: Dict[int, tuple[str, float]] = {
+EVIDENCE_LEVEL_INFO: Dict[int, Tuple[str, float]] = {
     1: ("Guidelines / Consensus", 1.00),
     2: ("Systematic Review / Meta-analysis", 0.90),
     3: ("Randomized Controlled Trials", 0.80),
@@ -86,7 +88,7 @@ EVIDENCE_LEVEL_INFO: Dict[int, tuple[str, float]] = {
 
 
 def _norm(text: str) -> str:
-    """Lowercase + strip punctuation to make intent matching robust."""
+    """Lowercase + normalize whitespace + strip punctuation."""
     t = (text or "").strip().lower()
     t = re.sub(r"[\s]+", " ", t)
     t = re.sub(r"[^\w\s]", "", t)
@@ -105,6 +107,9 @@ class QAPipeline:
         self.embedder = embedder
         self.vector_store = vector_store
         self.llm = llm_client
+
+        # Precompute normalized anchors for RapidFuzz
+        self._scope_anchors_norm = sorted({ _norm(a) for a in SCOPE_ANCHORS if a })
 
         env = os.getenv("ENV", "local").lower()
         if env == "prod":
@@ -147,9 +152,29 @@ class QAPipeline:
         qn = _norm(q)
         return any(p in qn for p in PAPER_PHRASES)
 
+    # -------- RapidFuzz scope check (no hardcoded typo list) --------
+
     def _is_in_scope(self, q: str) -> bool:
         qn = _norm(q)
-        return any(_norm(k) in qn for k in THYROID_KEYWORDS)
+        if not qn:
+            return False
+
+        # 1) Quick direct contains for "thyroid"
+        if "thyroid" in qn:
+            return True
+
+        # 2) Token-level fuzzy check for common near-miss spellings like thyoid/thyriod
+        for tok in qn.split():
+            if fuzz.ratio(tok, "thyroid") >= 80:
+                return True
+
+        # 3) Phrase-level fuzzy match vs anchors
+        match = process.extractOne(qn, self._scope_anchors_norm, scorer=fuzz.token_set_ratio)
+        # match = (best_anchor, score, index)
+        if match and match[1] >= 75:
+            return True
+
+        return False
 
     def _wants_evidence(self, q: str) -> bool:
         qn = _norm(q)
@@ -164,10 +189,6 @@ class QAPipeline:
         return any(p in qn for p in LONG_PREF_PHRASES)
 
     def _is_definition_question(self, q: str) -> bool:
-        """
-        Treat 'tell me about ...' and 'overview of ...' as overview/definition intent too,
-        so retrieval becomes more reliable.
-        """
         qn = _norm(q)
         return (
             qn.startswith("what is")
@@ -183,7 +204,7 @@ class QAPipeline:
         Modes:
           - evidence: include verbatim quotes
           - standard: longer structured answer
-          - short: shorter answer for simple questions (default for short prompts)
+          - short: shorter answer for simple questions
         """
         if self._wants_evidence(q):
             return "evidence"
@@ -218,6 +239,55 @@ class QAPipeline:
                 return None
         return None
 
+    # -------- Level filter parsing --------
+
+    def _parse_level_filter(self, q: str) -> Optional[List[int]]:
+        """
+        Examples:
+          - "only from level 1" -> [1]
+          - "level 1 only" -> [1]
+          - "levels 1-3" -> [1,2,3]
+          - "level 1 and 2" -> [1,2]
+        """
+        qn = _norm(q)
+        if "level" not in qn and "levels" not in qn:
+            return None
+
+        # range: levels 1-3
+        m_range = re.search(r"\blevels?\s*([1-7])\s*-\s*([1-7])\b", qn)
+        if m_range:
+            a, b = int(m_range.group(1)), int(m_range.group(2))
+            lo, hi = min(a, b), max(a, b)
+            return list(range(lo, hi + 1))
+
+        # explicit multiple mentions like "level 1 and level 2"
+        nums = re.findall(r"\blevels?\s*[:\-]?\s*([1-7])\b", qn)
+        levels = sorted({int(n) for n in nums}) if nums else []
+
+        # fallback: "from level 1"
+        if not levels:
+            m_from = re.search(r"\bfrom\s+level\s+([1-7])\b", qn)
+            if m_from:
+                levels = [int(m_from.group(1))]
+
+        return levels or None
+
+    def _strip_level_filter_text(self, q: str) -> str:
+        """
+        Remove level-filter phrases so embeddings don't get polluted by "only from level 1".
+        Keeps the clinical meaning of the question.
+        """
+        s = q or ""
+        s = re.sub(r"\bonly\s+from\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
+        s = re.sub(r"\bfrom\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
+        s = re.sub(r"\blevels?\s*[1-7](\s*-\s*[1-7])?\s*only\b", "", s, flags=re.I)
+        s = re.sub(r"\blevels?\s*[1-7](\s*(and|,)\s*[1-7])+\b", "", s, flags=re.I)
+        s = re.sub(r"\blevel\s*[1-7]\b", "", s, flags=re.I)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    # ------------------ Confidence rating ------------------
+
     def _safe_int(self, x: Any) -> Optional[int]:
         try:
             if x is None or isinstance(x, bool):
@@ -226,12 +296,10 @@ class QAPipeline:
         except Exception:
             return None
 
-    # ------------------ Confidence rating ------------------
-
     def _compute_confidence(self, retrieved: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Confidence is based on evidence levels of UNIQUE sources (grouped by PMID where possible).
-        This is NOT "medical correctness"; it's "strength of evidence in retrieved sources".
+        Confidence based on evidence levels of UNIQUE sources (group by PMID where possible).
+        This is not medical truth; it is "strength of evidence in retrieved sources".
         """
         by_source: Dict[str, Dict[str, Any]] = {}
         for r in retrieved or []:
@@ -256,7 +324,7 @@ class QAPipeline:
         weights = [EVIDENCE_LEVEL_INFO[l][1] for l in levels]
         avg_weight = sum(weights) / len(weights)
 
-        # small penalty for low number of supporting unique sources
+        # small penalty if only 1–2 sources support the answer
         n_sources = len(levels)
         if n_sources == 1:
             avg_weight *= 0.90
@@ -264,7 +332,6 @@ class QAPipeline:
             avg_weight *= 0.95
 
         score = int(round(avg_weight * 100))
-
         if score >= 85:
             label = "High"
         elif score >= 65:
@@ -493,8 +560,12 @@ C) Verbatim evidence
                     "radioiodine (RAI), follow-up, recurrence, and prognosis."
                 )
 
-            # Scope: thyroid-only
-            if not self._is_in_scope(question):
+            # Parse level filter early (and strip it from retrieval query)
+            requested_levels = self._parse_level_filter(question)
+            question_for_retrieval = self._strip_level_filter_text(question)
+
+            # Scope: thyroid-only (use original question; fuzzy check handles typos)
+            if not self._is_in_scope(question_for_retrieval):
                 return (
                     "I’m scoped to **thyroid cancer** questions only.\n\n"
                     "Try asking about thyroid nodules, ultrasound features, biopsy/FNA, thyroid cancer subtypes, staging, "
@@ -504,16 +575,16 @@ C) Verbatim evidence
             # Paper request mode
             if self._is_paper_request(question):
                 requested_pmid = self._extract_pmid(question)
-                retrieved = self.vector_store.search(question, k=max(k, 10))
+                retrieved = self.vector_store.search(question_for_retrieval, k=max(k, 10), levels=requested_levels)
                 return self._paper_lookup_response(retrieved, requested_pmid)
 
             # Select mode
-            mode = self._select_mode(question)  # "short" | "standard" | "evidence"
+            mode = self._select_mode(question_for_retrieval)  # "short" | "standard" | "evidence"
 
             # Build retrieval query
-            retrieval_query = question
-            if self._is_definition_question(question):
-                term = self._extract_term(question)
+            retrieval_query = question_for_retrieval
+            if self._is_definition_question(question_for_retrieval):
+                term = self._extract_term(question_for_retrieval)
                 retrieval_query = f"definition of {term}" if term else retrieval_query
 
             # Retrieval depth by mode
@@ -522,15 +593,20 @@ C) Verbatim evidence
             else:
                 k = max(k, 12)
 
-            retrieved = self.vector_store.search(retrieval_query, k=k)
+            retrieved = self.vector_store.search(retrieval_query, k=k, levels=requested_levels)
 
             # Fallback retry for broad/overview queries
             if not retrieved:
-                term = self._extract_term(question)
-                expanded = f"overview of {term} thyroid cancer" if term else f"overview of {question}"
-                retrieved = self.vector_store.search(expanded, k=max(k, 12))
+                term = self._extract_term(question_for_retrieval)
+                expanded = f"overview of {term} thyroid cancer" if term else f"overview of {question_for_retrieval}"
+                retrieved = self.vector_store.search(expanded, k=max(k, 12), levels=requested_levels)
 
             if not retrieved:
+                if requested_levels:
+                    return (
+                        f"Not enough evidence in the retrieved sources for **Level(s) {requested_levels}**.\n\n"
+                        "Try removing the level filter (or asking a narrower question)."
+                    )
                 return "Not enough evidence in the retrieved sources."
 
             excerpts = self._format_excerpts(retrieved)
@@ -540,26 +616,26 @@ C) Verbatim evidence
             conf_block = self._format_confidence_block(conf)
 
             # Generate definition
-            definition_section = self._generate_definition(question, excerpts, mode=mode)
+            definition_section = self._generate_definition(question_for_retrieval, excerpts, mode=mode)
             definition_section = f"{definition_section}\n\n{conf_block}"
 
             # SHORT mode: Definition + confidence + short summary (no quotes)
             if mode == "short":
-                facts = self._extract_facts(question, excerpts, max_facts=4)
+                facts = self._extract_facts(question_for_retrieval, excerpts, max_facts=4)
                 if facts.strip() == "Not enough evidence in the retrieved sources.":
                     return facts.strip()
                 summary_section = self._rewrite_summary(facts, min_bullets=2, max_bullets=3)
                 return f"{definition_section}\n\n{summary_section}".strip()
 
             # STANDARD / EVIDENCE
-            facts = self._extract_facts(question, excerpts, max_facts=8)
+            facts = self._extract_facts(question_for_retrieval, excerpts, max_facts=8)
             if facts.strip() == "Not enough evidence in the retrieved sources.":
                 return facts.strip()
 
             summary_section = self._rewrite_summary(facts, min_bullets=3, max_bullets=6)
 
             if mode == "evidence":
-                evidence_section = self._generate_evidence_quotes(question, excerpts, max_quotes=5)
+                evidence_section = self._generate_evidence_quotes(question_for_retrieval, excerpts, max_quotes=5)
                 return f"{definition_section}\n\n{summary_section}\n\n{evidence_section}".strip()
 
             return f"{definition_section}\n\n{summary_section}".strip()
