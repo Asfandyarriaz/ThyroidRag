@@ -9,7 +9,8 @@ from rapidfuzz import fuzz, process
 
 logging.basicConfig(level=logging.INFO)
 
-# ---- Minimal intent routing ----
+# -------------------- Routing phrases --------------------
+
 META_PHRASES = [
     "tell me about yourself",
     "who are you",
@@ -38,7 +39,6 @@ PAPER_PHRASES = [
     "pmid",
 ]
 
-# Evidence mode triggers
 EVIDENCE_PHRASES = [
     "show evidence",
     "show quotes",
@@ -53,11 +53,10 @@ EVIDENCE_PHRASES = [
     "proof",
 ]
 
-# User length preferences
 SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
 LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
 
-# Thyroid-only scope anchors (keep this fairly small/high-signal to avoid false positives)
+# High-signal anchors for thyroid-only scope detection
 SCOPE_ANCHORS = [
     "thyroid",
     "thyroid cancer",
@@ -86,6 +85,14 @@ EVIDENCE_LEVEL_INFO: Dict[int, Tuple[str, float]] = {
     7: ("Case Reports / Series", 0.40),
 }
 
+# Context safety caps (prevents prompt-too-large crashes)
+MAX_SOURCES = 6                 # unique papers (PMID/title)
+MAX_CHUNKS_PER_SOURCE = 2       # chunks per paper
+MAX_EXCERPT_CHARS = 900         # per chunk
+MAX_TOTAL_CONTEXT_CHARS = 6500  # overall excerpt text in prompt
+
+CONF_PLACEHOLDER = "<<CONFIDENCE_RATING>>"
+
 
 def _norm(text: str) -> str:
     """Lowercase + normalize whitespace + strip punctuation."""
@@ -108,8 +115,7 @@ class QAPipeline:
         self.vector_store = vector_store
         self.llm = llm_client
 
-        # Precompute normalized anchors for RapidFuzz
-        self._scope_anchors_norm = sorted({ _norm(a) for a in SCOPE_ANCHORS if a })
+        self._scope_anchors_norm = sorted({_norm(a) for a in SCOPE_ANCHORS if a})
 
         env = os.getenv("ENV", "local").lower()
         if env == "prod":
@@ -124,7 +130,7 @@ class QAPipeline:
         self.agent_instructions = self._load_instruction(agent_path)
         self.instruction_text = self._combine_instructions()
 
-    # ------------------ Utilities ------------------
+    # -------------------- instruction loading --------------------
 
     def _load_instruction(self, file_path: Path) -> str:
         if not file_path.exists():
@@ -144,6 +150,8 @@ class QAPipeline:
             parts.append(self.rag_instructions)
         return "\n\n".join(parts).strip()
 
+    # -------------------- routing helpers --------------------
+
     def _is_meta_question(self, q: str) -> bool:
         qn = _norm(q)
         return any(p in qn for p in META_PHRASES)
@@ -151,30 +159,6 @@ class QAPipeline:
     def _is_paper_request(self, q: str) -> bool:
         qn = _norm(q)
         return any(p in qn for p in PAPER_PHRASES)
-
-    # -------- RapidFuzz scope check (no hardcoded typo list) --------
-
-    def _is_in_scope(self, q: str) -> bool:
-        qn = _norm(q)
-        if not qn:
-            return False
-
-        # 1) Quick direct contains for "thyroid"
-        if "thyroid" in qn:
-            return True
-
-        # 2) Token-level fuzzy check for common near-miss spellings like thyoid/thyriod
-        for tok in qn.split():
-            if fuzz.ratio(tok, "thyroid") >= 80:
-                return True
-
-        # 3) Phrase-level fuzzy match vs anchors
-        match = process.extractOne(qn, self._scope_anchors_norm, scorer=fuzz.token_set_ratio)
-        # match = (best_anchor, score, index)
-        if match and match[1] >= 75:
-            return True
-
-        return False
 
     def _wants_evidence(self, q: str) -> bool:
         qn = _norm(q)
@@ -199,12 +183,21 @@ class QAPipeline:
             or qn.startswith("describe")
         )
 
+    def _extract_term(self, q: str) -> str:
+        raw = q.strip()
+        raw = re.sub(r"[?!.]+$", "", raw).strip()
+        ql = raw.lower()
+        for prefix in ("what is", "define", "explain", "tell me about", "overview of", "describe"):
+            if ql.startswith(prefix):
+                return raw[len(prefix):].strip()
+        return raw
+
     def _select_mode(self, q: str) -> str:
         """
         Modes:
           - evidence: include verbatim quotes
-          - standard: longer structured answer
-          - short: shorter answer for simple questions
+          - standard: longer answer
+          - short: short answer
         """
         if self._wants_evidence(q):
             return "evidence"
@@ -213,33 +206,37 @@ class QAPipeline:
         if self._wants_short(q):
             return "short"
 
-        qn = _norm(q)
-        wc = len(qn.split())
+        wc = len(_norm(q).split())
         if self._is_definition_question(q) and wc <= 10:
             return "short"
         if wc <= 6:
             return "short"
         return "standard"
 
-    def _extract_term(self, q: str) -> str:
-        qn = q.strip()
-        qn = re.sub(r"[?!.]+$", "", qn).strip()
-        ql = qn.lower()
-        for prefix in ("what is", "define", "explain", "tell me about", "overview of", "describe"):
-            if ql.startswith(prefix):
-                return qn[len(prefix):].strip()
-        return qn.strip()
+    # -------------------- RapidFuzz scope check --------------------
 
-    def _extract_pmid(self, q: str) -> Optional[int]:
-        m = re.search(r"\bpmid\b[:\s]*([0-9]{6,10})\b", (q or "").lower())
-        if m:
-            try:
-                return int(m.group(1))
-            except Exception:
-                return None
-        return None
+    def _is_in_scope(self, q: str) -> bool:
+        qn = _norm(q)
+        if not qn:
+            return False
 
-    # -------- Level filter parsing --------
+        # direct contains
+        if "thyroid" in qn:
+            return True
+
+        # token-level fuzzy for common misspellings
+        for tok in qn.split():
+            if fuzz.ratio(tok, "thyroid") >= 80:
+                return True
+
+        # phrase-level fuzzy vs anchors
+        match = process.extractOne(qn, self._scope_anchors_norm, scorer=fuzz.token_set_ratio)
+        if match and match[1] >= 75:
+            return True
+
+        return False
+
+    # -------------------- level-filter parsing --------------------
 
     def _parse_level_filter(self, q: str) -> Optional[List[int]]:
         """
@@ -253,18 +250,15 @@ class QAPipeline:
         if "level" not in qn and "levels" not in qn:
             return None
 
-        # range: levels 1-3
         m_range = re.search(r"\blevels?\s*([1-7])\s*-\s*([1-7])\b", qn)
         if m_range:
             a, b = int(m_range.group(1)), int(m_range.group(2))
             lo, hi = min(a, b), max(a, b)
             return list(range(lo, hi + 1))
 
-        # explicit multiple mentions like "level 1 and level 2"
         nums = re.findall(r"\blevels?\s*[:\-]?\s*([1-7])\b", qn)
         levels = sorted({int(n) for n in nums}) if nums else []
 
-        # fallback: "from level 1"
         if not levels:
             m_from = re.search(r"\bfrom\s+level\s+([1-7])\b", qn)
             if m_from:
@@ -273,10 +267,6 @@ class QAPipeline:
         return levels or None
 
     def _strip_level_filter_text(self, q: str) -> str:
-        """
-        Remove level-filter phrases so embeddings don't get polluted by "only from level 1".
-        Keeps the clinical meaning of the question.
-        """
         s = q or ""
         s = re.sub(r"\bonly\s+from\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\bfrom\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
@@ -286,7 +276,7 @@ class QAPipeline:
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
-    # ------------------ Confidence rating ------------------
+    # -------------------- confidence rating --------------------
 
     def _safe_int(self, x: Any) -> Optional[int]:
         try:
@@ -298,8 +288,8 @@ class QAPipeline:
 
     def _compute_confidence(self, retrieved: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Confidence based on evidence levels of UNIQUE sources (group by PMID where possible).
-        This is not medical truth; it is "strength of evidence in retrieved sources".
+        Confidence = strength of evidence in retrieved sources (not "truth certainty").
+        Uses unique papers (group by PMID when possible).
         """
         by_source: Dict[str, Dict[str, Any]] = {}
         for r in retrieved or []:
@@ -315,20 +305,16 @@ class QAPipeline:
                 levels.append(lvl)
 
         if not levels:
-            return {
-                "label": "Low",
-                "score": 0,
-                "breakdown": "No evidence level metadata found in retrieved sources.",
-            }
+            return {"label": "Low", "score": 0, "breakdown": "No evidence level metadata found."}
 
         weights = [EVIDENCE_LEVEL_INFO[l][1] for l in levels]
         avg_weight = sum(weights) / len(weights)
 
-        # small penalty if only 1–2 sources support the answer
-        n_sources = len(levels)
-        if n_sources == 1:
+        # small penalty for low number of unique sources
+        n = len(levels)
+        if n == 1:
             avg_weight *= 0.90
-        elif n_sources == 2:
+        elif n == 2:
             avg_weight *= 0.95
 
         score = int(round(avg_weight * 100))
@@ -345,44 +331,28 @@ class QAPipeline:
 
         parts = []
         for lvl in sorted(counts.keys()):
-            name = EVIDENCE_LEVEL_INFO[lvl][0]
-            parts.append(f"Level {lvl} ({name}): {counts[lvl]}")
+            parts.append(f"Level {lvl} ({EVIDENCE_LEVEL_INFO[lvl][0]}): {counts[lvl]}")
         breakdown = "; ".join(parts)
 
         return {"label": label, "score": score, "breakdown": breakdown}
 
-    def _format_confidence_block(self, confidence: Dict[str, Any]) -> str:
+    def _format_confidence_block(self, conf: Dict[str, Any]) -> str:
         return (
             "Confidence rating\n"
-            f"- **{confidence['label']}** ({confidence['score']}/100)\n"
-            f"- Based on retrieved evidence levels: {confidence['breakdown']}"
+            f"- **{conf['label']}** ({conf['score']}/100)\n"
+            f"- Based on retrieved evidence levels: {conf['breakdown']}"
         )
 
-    # ------------------ Retrieval formatting ------------------
+    # -------------------- paper mode --------------------
 
-    def _format_excerpts(self, retrieved: List[Dict[str, Any]]) -> str:
-        parts: List[str] = []
-        for i, item in enumerate(retrieved, start=1):
-            title = (item.get("title") or "").strip()
-            year = item.get("year", "")
-            pmid = item.get("pmid", "")
-            doi = item.get("doi", "")
-            evidence = item.get("evidence_level", "")
-            text = (item.get("text") or "").strip()
-
-            if title and year:
-                source_label = f"{title} ({year})"
-            elif title:
-                source_label = title
-            else:
-                source_label = f"Source {i}"
-
-            parts.append(
-                f"SOURCE {i}: {source_label}\n"
-                f"PMID: {pmid} | DOI: {doi} | Year: {year} | Evidence level: {evidence}\n"
-                f"EXCERPT:\n{text}"
-            )
-        return "\n\n".join(parts).strip()
+    def _extract_pmid(self, q: str) -> Optional[int]:
+        m = re.search(r"\bpmid\b[:\s]*([0-9]{6,10})\b", (q or "").lower())
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                return None
+        return None
 
     def _paper_lookup_response(self, retrieved: List[Dict[str, Any]], requested_pmid: Optional[int]) -> str:
         if not retrieved:
@@ -424,182 +394,196 @@ class QAPipeline:
         lines.append("")
         lines.append("Available excerpts in this database:")
 
-        max_excerpts = 8
         shown = 0
         for c in chunks:
             txt = (c.get("text") or "").strip()
             if not txt:
                 continue
             shown += 1
-            lines.append(f"- Excerpt {shown}: {txt}")
-            if shown >= max_excerpts:
+            lines.append(f"- Excerpt {shown}: {txt[:700].rstrip()}…")
+            if shown >= 6:
                 break
-
-        if len(chunks) > max_excerpts:
-            lines.append(f"\n(Showing {max_excerpts} excerpts out of {len(chunks)} stored for this paper.)")
 
         return "\n".join(lines)
 
-    # ------------------ Generation helpers ------------------
+    # -------------------- context builder (dedupe + truncation) --------------------
 
-    def _generate_definition(self, question: str, excerpts: str, mode: str) -> str:
-        max_sentences = "1" if mode == "short" else "2"
-        prompt_def = f"""
-{self.instruction_text}
+    def _build_context(self, retrieved: List[Dict[str, Any]]) -> str:
+        """
+        Build a compact context block:
+        - group by PMID/title
+        - keep top sources by score
+        - limit chunks per source
+        - truncate excerpt size + total context size
+        """
+        # sort by similarity score (desc), None scores last
+        def _score(x: Dict[str, Any]) -> float:
+            s = x.get("score")
+            try:
+                return float(s)
+            except Exception:
+                return -1.0
 
-Retrieved excerpts (use ONLY these):
-{excerpts}
+        ranked = sorted(retrieved or [], key=_score, reverse=True)
 
-User question:
-{question}
+        # group by source key
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for r in ranked:
+            pmid = r.get("pmid")
+            key = str(pmid) if pmid else str(r.get("title") or "unknown")
+            grouped.setdefault(key, []).append(r)
 
-Task:
-Write ONLY the Definition section.
+        # take top sources by best score
+        source_keys = sorted(grouped.keys(), key=lambda k: _score(grouped[k][0]), reverse=True)[:MAX_SOURCES]
 
-Output format (exactly):
+        parts: List[str] = []
+        total = 0
+        src_idx = 0
+
+        for key in source_keys:
+            src_idx += 1
+            hits = grouped[key][:MAX_CHUNKS_PER_SOURCE]
+
+            meta = hits[0]
+            title = (meta.get("title") or "").strip()
+            year = meta.get("year", "")
+            pmid = meta.get("pmid", "")
+            doi = meta.get("doi", "")
+            level = meta.get("evidence_level", "")
+
+            if title and year:
+                label = f"{title} ({year})"
+            elif title:
+                label = title
+            else:
+                label = f"Source {src_idx}"
+
+            header = f"SOURCE {src_idx}: {label}\nPMID: {pmid} | DOI: {doi} | Year: {year} | Evidence level: {level}\n"
+            if total + len(header) > MAX_TOTAL_CONTEXT_CHARS:
+                break
+            parts.append(header)
+            total += len(header)
+
+            for h in hits:
+                text = (h.get("text") or "").strip()
+                if not text:
+                    continue
+                if len(text) > MAX_EXCERPT_CHARS:
+                    text = text[:MAX_EXCERPT_CHARS].rstrip() + "…"
+
+                block = f"EXCERPT:\n{text}\n"
+                if total + len(block) > MAX_TOTAL_CONTEXT_CHARS:
+                    break
+                parts.append(block)
+                total += len(block)
+
+            if total >= MAX_TOTAL_CONTEXT_CHARS:
+                break
+
+        return "\n".join(parts).strip()
+
+    # -------------------- single-call answer generation --------------------
+
+    def _build_single_call_prompt(self, question: str, context: str, mode: str) -> str:
+        """
+        One LLM call that writes the final answer.
+        Confidence is inserted later via placeholder replacement.
+        """
+        if mode == "short":
+            bullets_summary = "2–3"
+            quotes = "0"
+        elif mode == "evidence":
+            bullets_summary = "3–6"
+            quotes = "3–5"
+        else:
+            bullets_summary = "3–6"
+            quotes = "0"
+
+        # keep model behavior stable + grounded
+        prompt = f"""
+You are a cautious clinical assistant answering thyroid cancer questions using ONLY the provided excerpts.
+
+CRITICAL RULES:
+- Use ONLY the excerpts in the context. Do NOT add outside medical knowledge.
+- If the excerpts do not support an answer, say: "Not enough evidence in the retrieved sources."
+- Every bullet must end with citations in the form (Title, Year).
+- Do not invent citations.
+
+OUTPUT FORMAT (follow exactly):
 A) Definition
-- <{max_sentences} sentence(s)>
+- 1–2 bullets.
 
-Rules:
-- Prefer an explicit definition from the excerpts (e.g., “X is …”).
-- If there is NO explicit definition, write a *working definition derived only from what the excerpts say*.
-  Start with: "Based on the retrieved sources, ..."
-- Do NOT add medical facts that are not stated or directly implied by the excerpts.
-- End each sentence with citations in the form (Title, Year) if supported.
-- If even a working definition is not possible from the excerpts, write exactly:
-  A clear definition is not explicitly provided in the retrieved excerpts.
-""".strip()
-        return self.llm.ask(prompt_def).strip()
+{CONF_PLACEHOLDER}
 
-    def _extract_facts(self, question: str, excerpts: str, max_facts: int) -> str:
-        prompt_extract = f"""
-{self.instruction_text}
-
-Retrieved excerpts (use ONLY these):
-{excerpts}
-
-User question:
-{question}
-
-Task:
-Extract ONLY the key facts needed to answer the question.
-
-Output format (exactly):
-FACTS:
-- <fact sentence> (Title, Year)
-- <fact sentence> (Title, Year)
-
-Rules:
-- Use ONLY information explicitly stated in the excerpts.
-- Each bullet must have a (Title, Year) citation.
-- Keep it to at most {max_facts} bullets.
-- No interpretation, no recommendations, no extra context.
-- If insufficient info, output exactly:
-  Not enough evidence in the retrieved sources.
-""".strip()
-        return self.llm.ask(prompt_extract).strip()
-
-    def _rewrite_summary(self, facts_text: str, min_bullets: int, max_bullets: int) -> str:
-        prompt_rewrite = f"""
-You are rewriting for clarity and cohesion.
-
-Input facts (do not add anything new):
-{facts_text}
-
-Task:
-Rewrite the facts into a cohesive set of bullets that are easier to read.
-- Keep the same meaning.
-- Do NOT introduce any new facts, numbers, study names, or medical recommendations.
-- Preserve citations by keeping each citation attached to the bullet that uses that fact.
-- Output between {min_bullets} and {max_bullets} bullets.
-
-Output format (exactly):
 B) Summary
-- <bullet> (Title, Year)
-- <bullet> (Title, Year)
-""".strip()
-        return self.llm.ask(prompt_rewrite).strip()
+- {bullets_summary} bullets.
 
-    def _generate_evidence_quotes(self, question: str, excerpts: str, max_quotes: int) -> str:
-        prompt_quotes = f"""
-Retrieved excerpts (use ONLY these):
-{excerpts}
+{"C) Verbatim evidence\n- " + quotes + " short direct quotes (<= 35 words), each as: " + '"<quote>" (Title, Year, PMID: <PMID>)' if mode == "evidence" else ""}
 
 User question:
 {question}
 
-Task:
-Provide short direct quotes copied exactly from the excerpts that support the key points.
-
-Rules:
-- Quotes must be word-for-word from the excerpts.
-- Provide at most {max_quotes} quotes.
-- Each quote must be <= 35 words.
-- Do not repeat the same idea twice (no duplicate or near-duplicate quotes).
-- Prefer quotes that cover different key points.
-- After each quote, include (Title, Year, PMID: <PMID>).
-- Do not add any text besides the quotes.
-
-Output format (exactly):
-C) Verbatim evidence
-- "<quote>" (Title, Year, PMID: <PMID>)
+Context (excerpts):
+{context}
 """.strip()
-        return self.llm.ask(prompt_quotes).strip()
-
-    # ------------------ Main entry ------------------
+        return prompt
 
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 5) -> str:
         try:
-            # Meta questions: answer directly (no retrieval)
+            # 1) Meta questions: no retrieval, deterministic response
             if self._is_meta_question(question):
                 return (
                     "I’m the assistant inside **Thyroid Cancer RAG Assistant**.\n\n"
                     "- I answer **thyroid cancer** questions by retrieving relevant excerpts from your indexed dataset (Qdrant).\n"
                     "- Then I generate an evidence-grounded response using only those excerpts.\n\n"
-                    "Ask about: thyroid cancer types (PTC/FTC/MTC/ATC), nodules, ultrasound/TIRADS, biopsy, staging, surgery, "
-                    "radioiodine (RAI), follow-up, recurrence, and prognosis."
+                    "You can ask about: thyroid cancer types (PTC/FTC/MTC/ATC), nodules, ultrasound/TIRADS, biopsy/FNA, "
+                    "staging, surgery, radioiodine (RAI), follow-up, recurrence, and prognosis."
                 )
 
-            # Parse level filter early (and strip it from retrieval query)
+            # 2) Parse level filter + strip it from retrieval text
             requested_levels = self._parse_level_filter(question)
-            question_for_retrieval = self._strip_level_filter_text(question)
+            q_clean = self._strip_level_filter_text(question)
 
-            # Scope: thyroid-only (use original question; fuzzy check handles typos)
-            if not self._is_in_scope(question_for_retrieval):
+            # 3) Thyroid-only scope gate (RapidFuzz)
+            if not self._is_in_scope(q_clean):
                 return (
                     "I’m scoped to **thyroid cancer** questions only.\n\n"
                     "Try asking about thyroid nodules, ultrasound features, biopsy/FNA, thyroid cancer subtypes, staging, "
                     "surgery, radioiodine (RAI), follow-up, or recurrence."
                 )
 
-            # Paper request mode
+            # 4) Paper lookup mode (no LLM)
             if self._is_paper_request(question):
                 requested_pmid = self._extract_pmid(question)
-                retrieved = self.vector_store.search(question_for_retrieval, k=max(k, 10), levels=requested_levels)
+                retrieved = self.vector_store.search(q_clean, k=max(k, 12), levels=requested_levels)
                 return self._paper_lookup_response(retrieved, requested_pmid)
 
-            # Select mode
-            mode = self._select_mode(question_for_retrieval)  # "short" | "standard" | "evidence"
+            # 5) Determine mode (deterministic)
+            mode = self._select_mode(q_clean)
 
-            # Build retrieval query
-            retrieval_query = question_for_retrieval
-            if self._is_definition_question(question_for_retrieval):
-                term = self._extract_term(question_for_retrieval)
-                retrieval_query = f"definition of {term}" if term else retrieval_query
+            # 6) Retrieval query rewriting for definition/overview
+            retrieval_query = q_clean
+            if self._is_definition_question(q_clean):
+                term = self._extract_term(q_clean)
+                if term:
+                    retrieval_query = f"definition of {term}"
 
-            # Retrieval depth by mode
+            # 7) Retrieval depth tuning (avoid huge L1 guideline prompts)
             if mode == "short":
-                k = max(k, 8)
+                k_use = max(k, 8)
             else:
-                k = max(k, 12)
+                k_use = max(k, 12)
 
-            retrieved = self.vector_store.search(retrieval_query, k=k, levels=requested_levels)
+            if requested_levels == [1]:
+                k_use = min(k_use, 6)
 
-            # Fallback retry for broad/overview queries
+            retrieved = self.vector_store.search(retrieval_query, k=k_use, levels=requested_levels)
+
+            # 8) fallback retry for broad prompts
             if not retrieved:
-                term = self._extract_term(question_for_retrieval)
-                expanded = f"overview of {term} thyroid cancer" if term else f"overview of {question_for_retrieval}"
-                retrieved = self.vector_store.search(expanded, k=max(k, 12), levels=requested_levels)
+                term = self._extract_term(q_clean)
+                expanded = f"overview of {term} thyroid cancer" if term else f"overview of {q_clean}"
+                retrieved = self.vector_store.search(expanded, k=max(k_use, 10), levels=requested_levels)
 
             if not retrieved:
                 if requested_levels:
@@ -609,37 +593,24 @@ C) Verbatim evidence
                     )
                 return "Not enough evidence in the retrieved sources."
 
-            excerpts = self._format_excerpts(retrieved)
-
-            # Confidence (from retrieved evidence levels)
+            # 9) Confidence rating (deterministic)
             conf = self._compute_confidence(retrieved)
             conf_block = self._format_confidence_block(conf)
 
-            # Generate definition
-            definition_section = self._generate_definition(question_for_retrieval, excerpts, mode=mode)
-            definition_section = f"{definition_section}\n\n{conf_block}"
+            # 10) Build compact context + single LLM call
+            context = self._build_context(retrieved)
+            prompt = self._build_single_call_prompt(q_clean, context, mode=mode)
+            draft = self.llm.ask(prompt).strip()
 
-            # SHORT mode: Definition + confidence + short summary (no quotes)
-            if mode == "short":
-                facts = self._extract_facts(question_for_retrieval, excerpts, max_facts=4)
-                if facts.strip() == "Not enough evidence in the retrieved sources.":
-                    return facts.strip()
-                summary_section = self._rewrite_summary(facts, min_bullets=2, max_bullets=3)
-                return f"{definition_section}\n\n{summary_section}".strip()
+            # 11) Insert confidence block exactly where placeholder is
+            if CONF_PLACEHOLDER in draft:
+                final_answer = draft.replace(CONF_PLACEHOLDER, conf_block)
+            else:
+                # fallback: append after definition
+                final_answer = f"{draft}\n\n{conf_block}".strip()
 
-            # STANDARD / EVIDENCE
-            facts = self._extract_facts(question_for_retrieval, excerpts, max_facts=8)
-            if facts.strip() == "Not enough evidence in the retrieved sources.":
-                return facts.strip()
-
-            summary_section = self._rewrite_summary(facts, min_bullets=3, max_bullets=6)
-
-            if mode == "evidence":
-                evidence_section = self._generate_evidence_quotes(question_for_retrieval, excerpts, max_quotes=5)
-                return f"{definition_section}\n\n{summary_section}\n\n{evidence_section}".strip()
-
-            return f"{definition_section}\n\n{summary_section}".strip()
+            return final_answer
 
         except Exception as e:
-            logging.error(f"Error during answer generation: {e}")
+            logging.exception(f"Error during answer generation: {e}")
             return "⚠️ Something went wrong while generating the answer. Please try again."
