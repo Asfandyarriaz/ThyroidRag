@@ -149,8 +149,15 @@ class QAPipeline:
         return any(_norm(k) in qn for k in THYROID_KEYWORDS)
 
     def _is_definition_question(self, q: str) -> bool:
-        qn = _norm(q)
-        return qn.startswith("what is") or qn.startswith("define") or qn.startswith("explain")
+    qn = _norm(q)
+    return (
+        qn.startswith("what is")
+        or qn.startswith("define")
+        or qn.startswith("explain")
+        or qn.startswith("tell me about")
+        or qn.startswith("overview of")
+        or qn.startswith("describe")
+    )
 
     def _extract_term(self, q: str) -> str:
         qn = q.strip()
@@ -449,6 +456,12 @@ C) Verbatim evidence
                 k = max(k, 12)
 
             retrieved = self.vector_store.search(retrieval_query, k=k)
+            # Fallback retry for broad/overview queries
+            if not retrieved:
+                term = self._extract_term(question)
+                expanded = f"overview of {term} thyroid cancer" if term else f"overview of {question}"
+                retrieved = self.vector_store.search(expanded, k=max(k, 12))
+
             if not retrieved:
                 return "Not enough evidence in the retrieved sources."
 
