@@ -1,8 +1,12 @@
-from typing import Any, List, Dict
+# rag/vector_store_qdrant.py
+from typing import Any, List, Dict, Optional
 import numpy as np
 import logging
 
+from qdrant_client.http import models as rest
+
 logging.basicConfig(level=logging.INFO)
+
 
 class QdrantVectorStore:
     def __init__(self, client: Any, collection_name: str, embedder: Any = None):
@@ -10,7 +14,23 @@ class QdrantVectorStore:
         self.collection_name = collection_name
         self.embedder = embedder
 
-    def search(self, query_text: str, k: int = 5) -> List[Dict[str, Any]]:
+    def _build_level_filter(self, levels: Optional[List[int]]) -> Optional[rest.Filter]:
+        if not levels:
+            return None
+
+        # Match any of the requested levels
+        should = []
+        for lvl in levels:
+            should.append(
+                rest.FieldCondition(
+                    key="evidence_level",
+                    match=rest.MatchValue(value=int(lvl)),
+                )
+            )
+
+        return rest.Filter(should=should, minimum_should_match=1)
+
+    def search(self, query_text: str, k: int = 5, levels: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         if self.embedder is None:
             raise ValueError("Embedder is not initialized.")
 
@@ -21,14 +41,26 @@ class QdrantVectorStore:
         if isinstance(query_vec, np.ndarray):
             query_vec = query_vec.tolist()
 
+        qfilter = self._build_level_filter(levels)
+
         try:
-            response = self.client.query_points(
+            kwargs = dict(
                 collection_name=self.collection_name,
                 query=query_vec,
                 limit=k,
                 with_payload=True,
                 with_vectors=False,
             )
+            if qfilter is not None:
+                kwargs["query_filter"] = qfilter
+
+            try:
+                response = self.client.query_points(**kwargs)
+            except TypeError:
+                # Some versions use `filter=` instead of `query_filter=`
+                if "query_filter" in kwargs:
+                    kwargs["filter"] = kwargs.pop("query_filter")
+                response = self.client.query_points(**kwargs)
 
             results: List[Dict[str, Any]] = []
             for hit in response.points:
