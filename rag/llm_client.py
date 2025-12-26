@@ -24,17 +24,12 @@ class LLMClient:
         self.model = (model or "").strip()
 
     def _extract_text(self, resp) -> str:
-        """
-        Robustly extract text from OpenAI Responses API response.
-        - Prefer resp.output_text
-        - Fallback: walk resp.output[].content[].text
-        """
         # 1) Convenience field
         t = getattr(resp, "output_text", None)
         if isinstance(t, str) and t.strip():
             return t.strip()
 
-        # 2) Structured output
+        # 2) Structured output fallback
         out = getattr(resp, "output", None)
         if isinstance(out, list):
             texts = []
@@ -43,7 +38,6 @@ class LLMClient:
                 if not isinstance(content, list):
                     continue
                 for c in content:
-                    # Some SDKs store text in c.text, others in c.get("text") if dict
                     if hasattr(c, "text"):
                         ct = getattr(c, "text", None)
                         if isinstance(ct, str) and ct.strip():
@@ -68,7 +62,6 @@ class LLMClient:
                 resp = self.client.responses.create(
                     model=self.model,
                     input=prompt,
-                    temperature=0.0,
                     max_output_tokens=800,
                 )
 
@@ -76,7 +69,6 @@ class LLMClient:
                 if text:
                     return text
 
-                # Request succeeded but no text; treat as transient once or twice
                 last_err = "No text returned from the LLM."
                 time.sleep(0.4 * attempt)
 
@@ -84,10 +76,7 @@ class LLMClient:
                 logger.error("OpenAI 400 BadRequestError: %s", str(e))
                 return (
                     "⚠️ OpenAI rejected the request (400 Bad Request).\n\n"
-                    "Common causes:\n"
-                    "- OPENAI_MODEL is wrong/blank\n"
-                    "- prompt/context too large\n\n"
-                    "Check Streamlit logs for details."
+                    "Check Streamlit logs for the exact error message."
                 )
 
             except (AuthenticationError, PermissionDeniedError, NotFoundError) as e:
