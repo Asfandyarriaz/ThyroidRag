@@ -36,6 +36,25 @@ PAPER_PHRASES = [
     "pmid",
 ]
 
+# Evidence mode triggers
+EVIDENCE_PHRASES = [
+    "show evidence",
+    "show quotes",
+    "quotes",
+    "verbatim",
+    "excerpts",
+    "show excerpts",
+    "cite",
+    "citations",
+    "sources",
+    "show sources",
+    "proof",
+]
+
+# User length preferences
+SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
+LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
+
 # Scope keywords (thyroid cancer only)
 THYROID_KEYWORDS = [
     "thyroid", "thyroid cancer", "thyroid carcinoma",
@@ -151,8 +170,44 @@ class QAPipeline:
                 return None
         return None
 
+    def _wants_evidence(self, q: str) -> bool:
+        qn = _norm(q)
+        return any(p in qn for p in EVIDENCE_PHRASES)
+
+    def _wants_short(self, q: str) -> bool:
+        qn = _norm(q)
+        return any(p in qn for p in SHORT_PREF_PHRASES)
+
+    def _wants_long(self, q: str) -> bool:
+        qn = _norm(q)
+        return any(p in qn for p in LONG_PREF_PHRASES)
+
+    def _select_mode(self, q: str) -> str:
+        """
+        Modes:
+          - "evidence": include quotes
+          - "standard": default longer structured answer
+          - "short": shorter answer for simple questions
+        """
+        if self._wants_evidence(q):
+            return "evidence"
+        if self._wants_long(q):
+            return "standard"
+        if self._wants_short(q):
+            return "short"
+
+        # Heuristic: short for simple/definition-style questions
+        qn = _norm(q)
+        word_count = len(qn.split())
+        if self._is_definition_question(q) or qn.startswith("tell me about"):
+            if word_count <= 8:
+                return "short"
+        if word_count <= 6:
+            return "short"
+
+        return "standard"
+
     def _format_excerpts(self, retrieved: List[Dict[str, Any]]) -> str:
-        """Format retrieved chunks into a prompt-friendly block with metadata."""
         parts: List[str] = []
         for i, item in enumerate(retrieved, start=1):
             title = (item.get("title") or "").strip()
@@ -232,15 +287,17 @@ class QAPipeline:
 
         return "\n".join(lines)
 
-    # ------------------ 2-pass summary for cohesion ------------------
+    # ------------------ Answer construction ------------------
 
-    def _generate_definition(self, question: str, excerpts: str) -> str:
+    def _generate_definition(self, question: str, excerpts: str, mode: str) -> str:
         """
         Definition section:
-        - Prefer an explicit definition if present.
-        - If not present, allow a short 'working definition' derived ONLY from the excerpts,
-          clearly labeled and still cited.
+        - Prefer explicit definition if present.
+        - Otherwise allow a short "working definition" derived ONLY from excerpts.
+        - In short mode: aim for 1 sentence; otherwise 1–2 sentences.
         """
+        max_sentences = "1" if mode == "short" else "2"
+
         prompt_def = f"""
 {self.instruction_text}
 
@@ -255,13 +312,13 @@ Write ONLY the Definition section.
 
 Output format (exactly):
 A) Definition
-- <1–2 sentences>
+- <{max_sentences} sentence(s)>
 
 Rules:
 - Prefer an explicit definition from the excerpts (e.g., “X is …”).
-- If there is NO explicit definition, you MUST write a *working definition derived only from what the excerpts say*.
-  Start the sentence with: "Based on the retrieved sources, ..."
-- Do NOT add any medical facts that are not stated or directly implied by the excerpts.
+- If there is NO explicit definition, write a *working definition derived only from what the excerpts say*.
+  Start with: "Based on the retrieved sources, ..."
+- Do NOT add medical facts that are not stated or directly implied by the excerpts.
 - End each sentence with citations in the form (Title, Year) if supported.
 - If even a working definition is not possible from the excerpts, write exactly:
   A clear definition is not explicitly provided in the retrieved excerpts.
@@ -269,8 +326,7 @@ Rules:
 
         return self.llm.ask(prompt_def).strip()
 
-    def _extract_facts(self, question: str, excerpts: str) -> str:
-        """Pass 1: extract atomic facts (bullets) with citations, no prose."""
+    def _extract_facts(self, question: str, excerpts: str, max_facts: int) -> str:
         prompt_extract = f"""
 {self.instruction_text}
 
@@ -287,19 +343,19 @@ Output format (exactly):
 FACTS:
 - <fact sentence> (Title, Year)
 - <fact sentence> (Title, Year)
-- ...
 
 Rules:
 - Use ONLY information explicitly stated in the excerpts.
 - Each bullet must have a (Title, Year) citation.
+- Keep it to at most {max_facts} bullets.
 - No interpretation, no recommendations, no extra context.
 - If insufficient info, output exactly:
   Not enough evidence in the retrieved sources.
 """.strip()
+
         return self.llm.ask(prompt_extract).strip()
 
-    def _rewrite_summary(self, facts_text: str) -> str:
-        """Pass 2: rewrite extracted facts into cohesive bullet summary without adding facts."""
+    def _rewrite_summary(self, facts_text: str, min_bullets: int, max_bullets: int) -> str:
         prompt_rewrite = f"""
 You are rewriting for clarity and cohesion.
 
@@ -307,23 +363,21 @@ Input facts (do not add anything new):
 {facts_text}
 
 Task:
-Rewrite the facts into a more cohesive set of 3–6 bullets that are easier to read.
+Rewrite the facts into a cohesive set of bullets that are easier to read.
 - Keep the same meaning.
 - Do NOT introduce any new facts, numbers, study names, or medical recommendations.
 - Preserve citations by keeping each citation attached to the bullet that uses that fact.
-- If a bullet combines multiple facts from different sources, include all relevant citations.
+- Output between {min_bullets} and {max_bullets} bullets.
 
 Output format (exactly):
 B) Summary
 - <bullet> (Title, Year)
 - <bullet> (Title, Year)
-- <bullet> (Title, Year)
-(3–6 bullets total)
 """.strip()
+
         return self.llm.ask(prompt_rewrite).strip()
 
-    def _generate_evidence_quotes(self, question: str, excerpts: str) -> str:
-        """Pass 3: verbatim quotes supporting key points (avoid duplicates; correct PMID formatting)."""
+    def _generate_evidence_quotes(self, question: str, excerpts: str, max_quotes: int) -> str:
         prompt_quotes = f"""
 Retrieved excerpts (use ONLY these):
 {excerpts}
@@ -332,10 +386,11 @@ User question:
 {question}
 
 Task:
-Provide 3–6 short direct quotes copied exactly from the excerpts that support the key points.
+Provide short direct quotes copied exactly from the excerpts that support the key points.
 
 Rules:
 - Quotes must be word-for-word from the excerpts.
+- Provide at most {max_quotes} quotes.
 - Each quote must be <= 35 words.
 - Do not repeat the same idea twice (no duplicate or near-duplicate quotes).
 - Prefer quotes that cover different key points.
@@ -345,8 +400,8 @@ Rules:
 Output format (exactly):
 C) Verbatim evidence
 - "<quote>" (Title, Year, PMID: <PMID>)
-- "<quote>" (Title, Year, PMID: <PMID>)
 """.strip()
+
         return self.llm.ask(prompt_quotes).strip()
 
     # --------------------------------------------------------------------
@@ -377,12 +432,21 @@ C) Verbatim evidence
                 retrieved = self.vector_store.search(question, k=max(k, 10))
                 return self._paper_lookup_response(retrieved, requested_pmid)
 
-            # 4) Normal RAG mode
+            # 4) Choose answer mode
+            mode = self._select_mode(question)
+            # mode in {"short","standard","evidence"}
+
+            # 5) Retrieval tuning
             retrieval_query = question
             if self._is_definition_question(question):
-                k = max(k, 12)
                 term = self._extract_term(question)
                 retrieval_query = f"definition of {term}" if term else retrieval_query
+
+            # more context for longer/evidence mode
+            if mode == "short":
+                k = max(k, 6)
+            else:
+                k = max(k, 12)
 
             retrieved = self.vector_store.search(retrieval_query, k=k)
             if not retrieved:
@@ -390,24 +454,37 @@ C) Verbatim evidence
 
             excerpts = self._format_excerpts(retrieved)
 
-            definition_section = self._generate_definition(question, excerpts)
+            # 6) Build response
+            definition_section = self._generate_definition(question, excerpts, mode=mode)
 
-            facts = self._extract_facts(question, excerpts)
+            if mode == "short":
+                facts = self._extract_facts(question, excerpts, max_facts=4)
+                if facts.strip() == "Not enough evidence in the retrieved sources.":
+                    return facts.strip()
+                summary_section = self._rewrite_summary(facts, min_bullets=2, max_bullets=3)
+
+                final_answer = f"{definition_section}\n\n{summary_section}".strip()
+
+                # If user explicitly asked for evidence, include it (but in short mode we don't by default)
+                return final_answer
+
+            # standard/evidence
+            facts = self._extract_facts(question, excerpts, max_facts=8)
             if facts.strip() == "Not enough evidence in the retrieved sources.":
                 return facts.strip()
 
-            summary_section = self._rewrite_summary(facts)
-            evidence_section = self._generate_evidence_quotes(question, excerpts)
+            summary_section = self._rewrite_summary(facts, min_bullets=3, max_bullets=6)
 
-            final_answer = f"{definition_section}\n\n{summary_section}\n\n{evidence_section}".strip()
+            if mode == "evidence":
+                evidence_section = self._generate_evidence_quotes(question, excerpts, max_quotes=5)
+                final_answer = f"{definition_section}\n\n{summary_section}\n\n{evidence_section}".strip()
+            else:
+                final_answer = f"{definition_section}\n\n{summary_section}".strip()
 
-            # If formatting slips, force a rewrite (rare but helps UX)
-            if (
-                "A) Definition" not in final_answer
-                or "B) Summary" not in final_answer
-                or "C) Verbatim evidence" not in final_answer
-            ):
-                fix_prompt = f"""
+            # 7) Basic format enforcement (keeps UI predictable)
+            if mode == "evidence":
+                if "A) Definition" not in final_answer or "B) Summary" not in final_answer or "C) Verbatim evidence" not in final_answer:
+                    fix_prompt = f"""
 Rewrite the answer to follow EXACTLY this format:
 
 A) Definition
@@ -427,7 +504,26 @@ Do NOT add new facts. Use ONLY the content already present in the draft below.
 DRAFT:
 {final_answer}
 """.strip()
-                final_answer = self.llm.ask(fix_prompt).strip()
+                    final_answer = self.llm.ask(fix_prompt).strip()
+            else:
+                if "A) Definition" not in final_answer or "B) Summary" not in final_answer:
+                    fix_prompt = f"""
+Rewrite the answer to follow EXACTLY this format:
+
+A) Definition
+- ...
+
+B) Summary
+- ...
+- ...
+(2–6 bullets depending on content)
+
+Do NOT add new facts. Use ONLY the content already present in the draft below.
+
+DRAFT:
+{final_answer}
+""".strip()
+                    final_answer = self.llm.ask(fix_prompt).strip()
 
             return final_answer
 
