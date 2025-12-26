@@ -1,117 +1,69 @@
+# rag/llm_client.py
 import time
 import logging
-from typing import Optional
-
 from openai import OpenAI
+from openai import (
+    BadRequestError,
+    RateLimitError,
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    AuthenticationError,
+    PermissionDeniedError,
+    NotFoundError,
+)
 
-# Best-effort imports for OpenAI python exceptions (names can vary by version)
-try:
-    from openai import (
-        APIError,
-        RateLimitError,
-        APITimeoutError,
-        APIConnectionError,
-        BadRequestError,
-        AuthenticationError,
-        PermissionDeniedError,
-        NotFoundError,
-    )
-except Exception:  # pragma: no cover
-    APIError = Exception
-    RateLimitError = Exception
-    APITimeoutError = Exception
-    APIConnectionError = Exception
-    BadRequestError = Exception
-    AuthenticationError = Exception
-    PermissionDeniedError = Exception
-    NotFoundError = Exception
-
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    def __init__(
-        self,
-        api_key: str,
-        model: str,
-        max_output_tokens: int = 650,
-        temperature: float = 0.0,
-    ):
+    def __init__(self, api_key: str, model: str):
         self.client = OpenAI(api_key=api_key)
-        self.model = model
-        self.max_output_tokens = max_output_tokens
-        self.temperature = temperature
+        self.model = (model or "").strip()  # IMPORTANT: strip whitespace
 
-    def _extract_output_text(self, response) -> str:
-        """
-        Prefer `response.output_text` (OpenAI convenience field).
-        Fallback to walking the response structure if needed.
-        """
-        text = getattr(response, "output_text", None)
-        if isinstance(text, str) and text.strip():
-            return text.strip()
+    def ask(self, prompt: str, attempt: int = 1, last_text: str | None = None) -> str:
+        if not self.model:
+            return "⚠️ OPENAI_MODEL is missing. Set it in Streamlit Secrets as OPENAI_MODEL."
 
-        # Fallback (defensive): try to find any text content
         try:
-            outputs = getattr(response, "output", None) or []
-            for o in outputs:
-                content = getattr(o, "content", None) or []
-                for c in content:
-                    t = getattr(c, "text", None)
-                    if isinstance(t, str) and t.strip():
-                        return t.strip()
-        except Exception:
-            pass
+            resp = self.client.responses.create(
+                model=self.model,
+                input=prompt,
+                max_output_tokens=800,  # supported in Responses API :contentReference[oaicite:1]{index=1}
+            )
+            text = getattr(resp, "output_text", None)
+            return text.strip() if text else "⚠️ No text returned from the LLM."
 
-        return ""
+        # ---- Non-retryable errors (don’t loop) ----
+        except BadRequestError as e:
+            logger.error("OpenAI 400 BadRequestError: %s", str(e))
+            return (
+                "⚠️ OpenAI rejected the request (400 Bad Request).\n\n"
+                "Most common causes:\n"
+                "- OPENAI_MODEL is wrong/blank (check Streamlit Secrets)\n"
+                "- prompt/context too large\n\n"
+                "Open the Streamlit logs for the exact error message."
+            )
+        except (AuthenticationError, PermissionDeniedError, NotFoundError) as e:
+            logger.error("OpenAI auth/permission/model error: %s", str(e))
+            return (
+                "⚠️ OpenAI auth/model error.\n\n"
+                "Check:\n"
+                "- OPENAI_API_KEY is valid\n"
+                "- OPENAI_MODEL exists and your key has access"
+            )
 
-    def ask(self, prompt: str, attempts: int = 5) -> str:
-        """
-        Calls OpenAI Responses API with retries on transient failures.
-        """
-        last_text: Optional[str] = None
-
-        for attempt in range(1, attempts + 1):
-            try:
-                response = self.client.responses.create(
-                    model=self.model,
-                    input=prompt,
-                    temperature=self.temperature,
-                    max_output_tokens=self.max_output_tokens,
-                    # store=False  # optional; keep off unless you explicitly need it
+        # ---- Retryable errors ----
+        except (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError) as e:
+            logger.warning("OpenAI retryable error (attempt %s): %s", attempt, str(e))
+            if attempt >= 5:
+                return last_text or (
+                    "⚠️ The LLM service is temporarily unavailable (rate limit/network/server). "
+                    "Please try again shortly."
                 )
+            time.sleep(0.7 * attempt)
+            return self.ask(prompt, attempt + 1, last_text=last_text)
 
-                text = self._extract_output_text(response)
-                if text:
-                    return text
-
-                # If empty output, treat as transient and retry
-                last_text = last_text or ""
-                time.sleep(0.5 * attempt)
-
-            except (RateLimitError, APITimeoutError, APIConnectionError) as e:
-                logging.warning(f"LLM transient error (attempt {attempt}/{attempts}): {type(e).__name__}")
-                time.sleep(0.8 * attempt)
-
-            except APIError as e:
-                # APIError often includes 5xx; retry. If it's not retryable, it will likely be a BadRequestError etc.
-                logging.warning(f"LLM API error (attempt {attempt}/{attempts}): {type(e).__name__}")
-                time.sleep(0.8 * attempt)
-
-            except (BadRequestError, AuthenticationError, PermissionDeniedError, NotFoundError) as e:
-                # These are usually NOT transient (bad key, bad model name, invalid request)
-                logging.error(f"LLM non-retryable error: {type(e).__name__}")
-                return (
-                    f"⚠️ LLM request failed ({type(e).__name__}). "
-                    "Check your OPENAI_API_KEY / model name and try again."
-                )
-
-            except Exception as e:
-                # Unknown error: retry a bit, but log it
-                logging.exception(f"LLM unexpected error (attempt {attempt}/{attempts}): {e}")
-                time.sleep(0.8 * attempt)
-
-        return last_text or (
-            "⚠️ The LLM service is temporarily unavailable. "
-            "Please try again shortly."
-        )
+        except Exception as e:
+            logger.exception("Unexpected LLM error: %s", str(e))
+            return "⚠️ Unexpected error calling the LLM. Check Streamlit logs."
