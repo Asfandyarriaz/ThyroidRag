@@ -1,6 +1,7 @@
 numpy
 pandas
 pyarrow
+rapidfuzz==3.10.1
 
 streamlit==1.51.0
 qdrant-client==1.16.1
