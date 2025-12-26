@@ -500,36 +500,13 @@ Context (excerpts):
 
     # -------------------- post-processing (insert confidence + cleanup) --------------------
 
-    def _remove_stray_numeric_lines(self, text: str) -> str:
-        """
-        Remove lines that are just:
-          - 0.60
-          - <<0.63>>
-        (common artifacts from earlier placeholder strategies)
-        """
-        lines = []
-        for line in (text or "").splitlines():
-            stripped = line.strip()
-            if re.fullmatch(r"0\.\d{1,3}", stripped):
-                continue
-            if re.fullmatch(r"<<0\.\d{1,3}>>", stripped):
-                continue
-            lines.append(line)
-        return "\n".join(lines).strip()
-
-    def _insert_confidence_block(self, answer: str, conf_block: str) -> str:
-        """
-        Insert confidence block between Definition and Summary.
-        """
-        if not answer:
+    def _insert_confidence_before_summary(self, draft: str, conf_block: str) -> str:
+        if not draft:
             return conf_block
-
-        # ensure we insert before "B) Summary" if present
-        if "\nB) Summary" in answer:
-            return answer.replace("\nB) Summary", f"\n\n{conf_block}\n\nB) Summary", 1)
-
-        # fallback: append
-        return f"{answer}\n\n{conf_block}".strip()
+        marker = "B) Summary"
+        if marker in draft:
+            return draft.replace(marker, f"{conf_block}\n\n{marker}", 1)
+        return f"{draft}\n\n{conf_block}".strip()
 
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 5) -> str:
         try:
@@ -565,11 +542,7 @@ Context (excerpts):
                 if term:
                     retrieval_query = f"definition of {term}"
 
-            if mode == "short":
-                k_use = max(k, 8)
-            else:
-                k_use = max(k, 12)
-
+            k_use = max(k, 8) if mode == "short" else max(k, 12)
             if requested_levels == [1]:
                 k_use = min(k_use, 6)
 
@@ -593,12 +566,12 @@ Context (excerpts):
 
             context = self._build_context(retrieved)
             prompt = self._build_single_call_prompt(q_clean, context, mode=mode)
+
             draft = self.llm.ask(prompt).strip()
+            if draft.startswith("⚠️"):
+                return draft
 
-            draft = self._remove_stray_numeric_lines(draft)
-            final_answer = self._insert_confidence_block(draft, conf_block)
-
-            return final_answer
+            return self._insert_confidence_before_summary(draft, conf_block)
 
         except Exception as e:
             logging.exception(f"Error during answer generation: {e}")
