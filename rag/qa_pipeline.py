@@ -73,6 +73,17 @@ THYROID_KEYWORDS = [
     "braf", "ras", "ret", "molecular",
 ]
 
+# Evidence level -> name + weight (higher = higher confidence)
+EVIDENCE_LEVEL_INFO: Dict[int, tuple[str, float]] = {
+    1: ("Guidelines / Consensus", 1.00),
+    2: ("Systematic Review / Meta-analysis", 0.90),
+    3: ("Randomized Controlled Trials", 0.80),
+    4: ("Clinical Trials (non-randomized)", 0.70),
+    5: ("Cohort Studies", 0.60),
+    6: ("Case-Control Studies", 0.50),
+    7: ("Case Reports / Series", 0.40),
+}
+
 
 def _norm(text: str) -> str:
     """Lowercase + strip punctuation to make intent matching robust."""
@@ -206,6 +217,81 @@ class QAPipeline:
             except Exception:
                 return None
         return None
+
+    def _safe_int(self, x: Any) -> Optional[int]:
+        try:
+            if x is None or isinstance(x, bool):
+                return None
+            return int(x)
+        except Exception:
+            return None
+
+    # ------------------ Confidence rating ------------------
+
+    def _compute_confidence(self, retrieved: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Confidence is based on evidence levels of UNIQUE sources (grouped by PMID where possible).
+        This is NOT "medical correctness"; it's "strength of evidence in retrieved sources".
+        """
+        by_source: Dict[str, Dict[str, Any]] = {}
+        for r in retrieved or []:
+            pmid = r.get("pmid")
+            key = str(pmid) if pmid else str(r.get("title") or id(r))
+            if key not in by_source:
+                by_source[key] = r
+
+        levels: List[int] = []
+        for src in by_source.values():
+            lvl = self._safe_int(src.get("evidence_level"))
+            if lvl in EVIDENCE_LEVEL_INFO:
+                levels.append(lvl)
+
+        if not levels:
+            return {
+                "label": "Low",
+                "score": 0,
+                "breakdown": "No evidence level metadata found in retrieved sources.",
+            }
+
+        weights = [EVIDENCE_LEVEL_INFO[l][1] for l in levels]
+        avg_weight = sum(weights) / len(weights)
+
+        # small penalty for low number of supporting unique sources
+        n_sources = len(levels)
+        if n_sources == 1:
+            avg_weight *= 0.90
+        elif n_sources == 2:
+            avg_weight *= 0.95
+
+        score = int(round(avg_weight * 100))
+
+        if score >= 85:
+            label = "High"
+        elif score >= 65:
+            label = "Medium"
+        else:
+            label = "Low"
+
+        counts: Dict[int, int] = {}
+        for l in levels:
+            counts[l] = counts.get(l, 0) + 1
+
+        parts = []
+        for lvl in sorted(counts.keys()):
+            name = EVIDENCE_LEVEL_INFO[lvl][0]
+            parts.append(f"Level {lvl} ({name}): {counts[lvl]}")
+        breakdown = "; ".join(parts)
+
+        return {"label": label, "score": score, "breakdown": breakdown}
+
+    def _format_confidence_block(self, confidence: Dict[str, Any]) -> str:
+        return (
+            "Confidence rating\n"
+            f"- **{confidence['label']}** ({confidence['score']}/100)\n"
+            f"- Based on retrieved evidence levels: {confidence['breakdown']}"
+        )
+
+    # ------------------ Retrieval formatting ------------------
 
     def _format_excerpts(self, retrieved: List[Dict[str, Any]]) -> str:
         parts: List[str] = []
@@ -421,7 +507,7 @@ C) Verbatim evidence
                 retrieved = self.vector_store.search(question, k=max(k, 10))
                 return self._paper_lookup_response(retrieved, requested_pmid)
 
-            # Select answer mode
+            # Select mode
             mode = self._select_mode(question)  # "short" | "standard" | "evidence"
 
             # Build retrieval query
@@ -449,18 +535,23 @@ C) Verbatim evidence
 
             excerpts = self._format_excerpts(retrieved)
 
-            # Generate sections
-            definition_section = self._generate_definition(question, excerpts, mode=mode)
+            # Confidence (from retrieved evidence levels)
+            conf = self._compute_confidence(retrieved)
+            conf_block = self._format_confidence_block(conf)
 
+            # Generate definition
+            definition_section = self._generate_definition(question, excerpts, mode=mode)
+            definition_section = f"{definition_section}\n\n{conf_block}"
+
+            # SHORT mode: Definition + confidence + short summary (no quotes)
             if mode == "short":
                 facts = self._extract_facts(question, excerpts, max_facts=4)
                 if facts.strip() == "Not enough evidence in the retrieved sources.":
                     return facts.strip()
                 summary_section = self._rewrite_summary(facts, min_bullets=2, max_bullets=3)
-                final_answer = f"{definition_section}\n\n{summary_section}".strip()
-                return final_answer
+                return f"{definition_section}\n\n{summary_section}".strip()
 
-            # standard/evidence
+            # STANDARD / EVIDENCE
             facts = self._extract_facts(question, excerpts, max_facts=8)
             if facts.strip() == "Not enough evidence in the retrieved sources.":
                 return facts.strip()
@@ -469,11 +560,9 @@ C) Verbatim evidence
 
             if mode == "evidence":
                 evidence_section = self._generate_evidence_quotes(question, excerpts, max_quotes=5)
-                final_answer = f"{definition_section}\n\n{summary_section}\n\n{evidence_section}".strip()
-            else:
-                final_answer = f"{definition_section}\n\n{summary_section}".strip()
+                return f"{definition_section}\n\n{summary_section}\n\n{evidence_section}".strip()
 
-            return final_answer
+            return f"{definition_section}\n\n{summary_section}".strip()
 
         except Exception as e:
             logging.error(f"Error during answer generation: {e}")
