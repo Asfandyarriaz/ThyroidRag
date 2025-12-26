@@ -26,8 +26,7 @@ class QdrantVectorStore:
             for lvl in levels
         ]
 
-        # IMPORTANT: qdrant-client 1.16.x Filter does NOT support `minimum_should_match`
-        # Using `should` alone is enough for "match any of these levels".
+        # qdrant-client 1.16.x Filter does NOT support minimum_should_match
         return rest.Filter(should=should_conditions)
 
     def search(self, query_text: str, k: int = 5, levels: Optional[List[int]] = None) -> List[Dict[str, Any]]:
@@ -53,13 +52,12 @@ class QdrantVectorStore:
             )
 
             if qfilter is not None:
-                # Newer clients: query_filter=
                 kwargs["query_filter"] = qfilter
 
             try:
                 response = self.client.query_points(**kwargs)
             except TypeError:
-                # Some clients: filter=
+                # Some client versions expect `filter=` instead of `query_filter=`
                 if "query_filter" in kwargs:
                     kwargs["filter"] = kwargs.pop("query_filter")
                 response = self.client.query_points(**kwargs)
@@ -76,7 +74,6 @@ class QdrantVectorStore:
                     "evidence_level": payload.get("evidence_level", None),
                     "score": getattr(hit, "score", None),
                 })
-
             return results
 
         except Exception as e:
