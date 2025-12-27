@@ -1,137 +1,107 @@
+# ui/layout.py
 import streamlit as st
 
-APP_NAME = "Thyroid Cancer RAG Assistant"
 
 def setup_page():
     st.set_page_config(
-        page_title=APP_NAME,
+        page_title="Thyroid Cancer RAG Assistant",
         page_icon="🩺",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
+
 def inject_custom_css():
     st.markdown(
         """
-        <style>
-        /* ---------- Global (ChatGPT-like light theme) ---------- */
-        html, body, .stApp {
-            background: #f7f7f8 !important;
-            color: #111827 !important;
-            font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-        }
+<style>
+/* --- Overall page (ChatGPT-ish, not pitch black) --- */
+.stApp {
+  background: #0b1220; /* deep navy */
+  color: #e5e7eb;
+}
 
-        /* Hide Streamlit chrome */
-        #MainMenu, header, footer { visibility: hidden; }
+/* Main content width + bottom padding so input never overlaps */
+.block-container {
+  padding-top: 1.2rem;
+  padding-bottom: 7.5rem !important;
+  max-width: 900px;
+}
 
-        /* Main content width + padding */
-        .block-container {
-            max-width: 980px;
-            padding-top: 1.25rem !important;
-            padding-bottom: 9rem !important;  /* IMPORTANT: prevents chat input overlap */
-        }
+/* Hide Streamlit chrome */
+#MainMenu, header, footer { visibility: hidden; }
 
-        /* Sidebar */
-        section[data-testid="stSidebar"] {
-            background: #ffffff !important;
-            border-right: 1px solid #e5e7eb !important;
-        }
+/* Sidebar */
+section[data-testid="stSidebar"] {
+  background: #0a1020;
+  border-right: 1px solid rgba(255,255,255,0.08);
+}
 
-        /* Title */
-        .main-title {
-            text-align: center;
-            color: #111827;
-            font-size: 2.0rem;
-            font-weight: 700;
-            margin: 0.25rem 0 1.0rem 0;
-            letter-spacing: -0.02em;
-        }
+/* Chat message bubbles */
+div[data-testid="stChatMessage"] {
+  border-radius: 14px;
+  padding: 0.25rem 0.25rem;
+}
 
-        /* ---------- Chat bubbles ---------- */
-        .user-message, .bot-message {
-            display: flex;
-            gap: 10px;
-            margin: 12px 0;
-            align-items: flex-start;
-        }
+/* Improve markdown spacing (remove huge blank gaps) */
+div[data-testid="stChatMessage"] p {
+  margin: 0.25rem 0 !important;
+}
+div[data-testid="stChatMessage"] ul {
+  margin: 0.25rem 0 0.25rem 1.2rem !important;
+}
+div[data-testid="stChatMessage"] li {
+  margin: 0.15rem 0 !important;
+}
 
-        .user-message { justify-content: flex-end; }
-        .bot-message { justify-content: flex-start; }
+/* Chat input: consistent dark surface, no weird white rectangle */
+div[data-testid="stChatInput"] {
+  position: fixed;
+  bottom: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(900px, calc(100% - 2rem));
+  z-index: 999;
+}
 
-        .user-content, .bot-content {
-            padding: 12px 14px;
-            border-radius: 14px;
-            max-width: 72%;
-            line-height: 1.45;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
+div[data-testid="stChatInput"] textarea {
+  background: #0f1a33 !important;
+  color: #e5e7eb !important;
+  border: 1px solid rgba(255,255,255,0.14) !important;
+  border-radius: 14px !important;
+}
 
-        .user-content {
-            background: #dbeafe; /* soft blue */
-            color: #0f172a;
-            border: 1px solid #bfdbfe;
-        }
+div[data-testid="stChatInput"] textarea::placeholder {
+  color: rgba(229,231,235,0.55) !important;
+}
 
-        .bot-content {
-            background: #ffffff;
-            color: #111827;
-            border: 1px solid #e5e7eb;
-        }
+/* Buttons/toggles */
+.stButton button {
+  border-radius: 12px;
+}
 
-        .user-icon, .bot-icon {
-            font-size: 1.25rem;
-            color: #6b7280;
-            margin-top: 2px;
-        }
-
-        /* ---------- Thinking indicator ---------- */
-        .typing-indicator {
-            display: inline-block;
-            font-style: italic;
-            color: #6b7280;
-        }
-
-        /* ---------- Chat input styling ---------- */
-        /* Container behind chat input */
-        div[data-testid="stChatInputContainer"] {
-            background: #f7f7f8 !important;
-            border-top: 1px solid #e5e7eb !important;
-            padding-top: 0.75rem !important;
-            padding-bottom: 0.75rem !important;
-        }
-
-        /* Actual input area */
-        div[data-testid="stChatInput"] textarea {
-            background: #ffffff !important;
-            color: #111827 !important;
-            border: 1px solid #d1d5db !important;
-            border-radius: 14px !important;
-            padding: 12px 14px !important;
-            box-shadow: none !important;
-        }
-
-        /* Placeholder text */
-        div[data-testid="stChatInput"] textarea::placeholder {
-            color: #9ca3af !important;
-        }
-
-        /* Make the input nicely centered (like ChatGPT) */
-        div[data-testid="stChatInput"] {
-            max-width: 980px !important;
-            margin-left: auto !important;
-            margin-right: auto !important;
-        }
-
-        /* Buttons */
-        .stButton>button {
-            border-radius: 12px !important;
-        }
-
-        </style>
-        """,
+/* Small pill for disclaimer */
+.disclaimer {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  padding: 0.8rem 1rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.95rem;
+  line-height: 1.35rem;
+}
+</style>
+""",
         unsafe_allow_html=True,
     )
 
+
 def page_title():
-    st.markdown(f'<div class="main-title">🩺 {APP_NAME}</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+<h2 style="margin: 0 0 0.75rem 0; font-weight: 700;">
+🩺 Thyroid Cancer RAG Assistant
+</h2>
+""",
+        unsafe_allow_html=True,
+    )
