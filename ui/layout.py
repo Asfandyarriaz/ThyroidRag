@@ -15,35 +15,29 @@ def inject_custom_css():
     st.markdown(
         """
 <style>
-/* --- Overall page (ChatGPT-ish, not pitch black) --- */
+/* Light, clean background */
 .stApp {
-  background: #0b1220; /* deep navy */
-  color: #e5e7eb;
+  background: #f6f7fb;
+  color: #111827;
 }
 
 /* Main content width + bottom padding so input never overlaps */
 .block-container {
   padding-top: 1.2rem;
   padding-bottom: 7.5rem !important;
-  max-width: 900px;
+  max-width: 920px;
 }
 
 /* Hide Streamlit chrome */
 #MainMenu, header, footer { visibility: hidden; }
 
-/* Sidebar */
+/* Sidebar: light */
 section[data-testid="stSidebar"] {
-  background: #0a1020;
-  border-right: 1px solid rgba(255,255,255,0.08);
+  background: #ffffff;
+  border-right: 1px solid #e5e7eb;
 }
 
-/* Chat message bubbles */
-div[data-testid="stChatMessage"] {
-  border-radius: 14px;
-  padding: 0.25rem 0.25rem;
-}
-
-/* Improve markdown spacing (remove huge blank gaps) */
+/* Chat message spacing tighter (removes huge blank gaps) */
 div[data-testid="stChatMessage"] p {
   margin: 0.25rem 0 !important;
 }
@@ -54,41 +48,51 @@ div[data-testid="stChatMessage"] li {
   margin: 0.15rem 0 !important;
 }
 
-/* Chat input: consistent dark surface, no weird white rectangle */
+/* Chat input: fixed but not overlapping */
 div[data-testid="stChatInput"] {
   position: fixed;
-  bottom: 0.75rem;
+  bottom: 0.9rem;
   left: 50%;
   transform: translateX(-50%);
-  width: min(900px, calc(100% - 2rem));
+  width: min(920px, calc(100% - 2rem));
   z-index: 999;
 }
 
+/* Input look */
 div[data-testid="stChatInput"] textarea {
-  background: #0f1a33 !important;
-  color: #e5e7eb !important;
-  border: 1px solid rgba(255,255,255,0.14) !important;
+  background: #ffffff !important;
+  color: #111827 !important;
+  border: 1px solid #d1d5db !important;
   border-radius: 14px !important;
+  box-shadow: 0 6px 18px rgba(17,24,39,0.08);
 }
 
 div[data-testid="stChatInput"] textarea::placeholder {
-  color: rgba(229,231,235,0.55) !important;
+  color: rgba(17,24,39,0.45) !important;
 }
 
-/* Buttons/toggles */
+/* Buttons: rounded */
 .stButton button {
   border-radius: 12px;
 }
 
-/* Small pill for disclaimer */
+/* Disclaimer banner */
 .disclaimer {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.10);
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
   border-radius: 14px;
-  padding: 0.8rem 1rem;
-  margin-bottom: 0.5rem;
+  padding: 0.85rem 1rem;
+  margin: 0.25rem 0 0.9rem 0;
   font-size: 0.95rem;
   line-height: 1.35rem;
+}
+
+/* Subtle title */
+.page-title {
+  margin: 0 0 0.75rem 0;
+  font-weight: 750;
+  color: #0f172a;
 }
 </style>
 """,
@@ -98,10 +102,6 @@ div[data-testid="stChatInput"] textarea::placeholder {
 
 def page_title():
     st.markdown(
-        """
-<h2 style="margin: 0 0 0.75rem 0; font-weight: 700;">
-🩺 Thyroid Cancer RAG Assistant
-</h2>
-""",
+        '<h2 class="page-title">🩺 Thyroid Cancer RAG Assistant</h2>',
         unsafe_allow_html=True,
     )
