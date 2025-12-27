@@ -1,4 +1,5 @@
 # app.py
+import re
 import streamlit as st
 
 from core.pipeline_loader import init_pipeline
@@ -9,6 +10,19 @@ setup_page()
 inject_custom_css()
 page_title()
 
+
+def normalize_output(text: str) -> str:
+    """Reduce huge blank gaps in LLM output without changing meaning."""
+    if not text:
+        return text
+    t = text.strip()
+    # collapse 3+ blank lines -> 2
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    # trim trailing spaces on each line
+    t = "\n".join(line.rstrip() for line in t.splitlines())
+    return t.strip()
+
+
 # --- init pipeline once ---
 if "pipeline" not in st.session_state:
     st.session_state.pipeline = init_pipeline()
@@ -16,17 +30,21 @@ if "pipeline" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- Disclaimer on first load ---
-if len(st.session_state.messages) == 0:
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": (
-            "⚠️ **Disclaimer (Research/Education Only):**\n\n"
-            "This assistant retrieves excerpts from a curated thyroid cancer literature dataset and generates "
-            "evidence-grounded summaries. It does **not** provide medical advice, diagnosis, or treatment decisions. "
-            "For clinical decisions, consult qualified clinicians and official guidelines."
-        )
-    })
+# --- disclaimer on first load ---
+if "disclaimer_shown" not in st.session_state:
+    st.session_state.disclaimer_shown = True
+    st.session_state.messages.insert(
+        0,
+        {
+            "role": "assistant",
+            "content": (
+                '<div class="disclaimer">'
+                "⚠️ <b>Disclaimer:</b> This tool is for research/education only and does not provide medical advice. "
+                "For clinical decisions, consult guidelines and qualified healthcare professionals."
+                "</div>"
+            ),
+        },
+    )
 
 # --- Sidebar controls ---
 with st.sidebar:
@@ -35,34 +53,41 @@ with st.sidebar:
         "Answer style",
         ["Short", "Standard", "Evidence"],
         index=0,
-        help="Short = quick answer, Standard = fuller, Evidence = includes quotes.",
+        help="Short = quick. Standard = fuller. Evidence = includes verbatim quotes.",
     )
 
     st.markdown("---")
 
-    # Left label + hover tooltip (exactly what you asked)
+    # "Credibility Check" label with hover tooltip
+    st.markdown(
+        '<span title="Check claims from other sources by verifying them against the indexed thyroid cancer papers.">'
+        "### ✅ Credibility Check"
+        "</span>",
+        unsafe_allow_html=True,
+    )
+
     credibility_on = st.toggle(
-        "✅ Credibility check",
+        "Enable",
         value=False,
-        help="Check claims from other sources (e.g., Google/Gemini/other sites) to see if your indexed thyroid cancer papers support them."
+        help="When enabled, you can paste a claim and run a credibility check.",
     )
 
-    claim_to_check = ""
-    verify_clicked = False
-
+    claim_text = ""
+    run_cred = False
     if credibility_on:
-        with st.form("cred_form", clear_on_submit=False):
-            claim_to_check = st.text_area(
-                "Paste the claim to verify",
-                placeholder="Example: 'Radioiodine ablation decreases local recurrence risk in papillary thyroid cancer.'",
-                height=120,
-            )
-            verify_clicked = st.form_submit_button("Verify claim")
+        claim_text = st.text_area(
+            "Paste the claim to verify",
+            placeholder="Example: Radioiodine ablation decreases local recurrence risk in papillary thyroid cancer.",
+            height=140,
+        )
+        run_cred = st.button("Run credibility check", use_container_width=True)
 
     st.markdown("---")
-    if st.button("Clear chat"):
+    if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.disclaimer_shown = False
         st.rerun()
+
 
 # --- render history ---
 for msg in st.session_state.messages:
@@ -71,46 +96,53 @@ for msg in st.session_state.messages:
     else:
         render_bot_message(msg["content"])
 
+
 def apply_mode_hint(user_text: str) -> str:
+    # lightweight hint; pipeline also routes modes
     if mode == "Short":
         return f"{user_text}\n\n(Answer in short mode.)"
     if mode == "Evidence":
         return f"{user_text}\n\n(Include verbatim evidence quotes.)"
     return user_text
 
-# --- If credibility form submitted, run credibility check and append to chat ---
-if credibility_on and verify_clicked:
-    claim = (claim_to_check or "").strip()
-    if claim:
-        # Show what user is verifying
-        st.session_state.messages.append({"role": "user", "content": f"[Credibility Check] {claim}"})
-        render_user_message(f"[Credibility Check] {claim}")
 
-        thinking_ph = show_thinking()
-
-        combined = apply_mode_hint(f"Check credibility: {claim}")
-        answer = st.session_state.pipeline.answer(combined, chat_history=st.session_state.messages)
-
-        thinking_ph.empty()
-        st.session_state.messages.append({"role": "assistant", "content": answer})
-        render_bot_message(answer)
-    else:
-        st.sidebar.warning("Paste a claim first.")
-
-# --- Normal chat input ---
+# --- input ---
 user_input = st.chat_input("Ask about thyroid cancer…")
 
-if user_input:
-    user_text = user_input.strip()
-    combined = apply_mode_hint(user_text)
+# Sidebar credibility run has priority if pressed
+if run_cred and claim_text.strip():
+    combined = f"CREDIBILITY_CHECK: {claim_text.strip()}"
+    combined = apply_mode_hint(combined)
 
-    st.session_state.messages.append({"role": "user", "content": user_text})
-    render_user_message(user_text)
+    st.session_state.messages.append({"role": "user", "content": f"[Credibility Check] {claim_text.strip()}"})
+    render_user_message(f"[Credibility Check] {claim_text.strip()}")
 
     thinking_ph = show_thinking()
-
     answer = st.session_state.pipeline.answer(combined, chat_history=st.session_state.messages)
-
     thinking_ph.empty()
+
+    answer = normalize_output(answer)
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+    render_bot_message(answer)
+
+elif user_input:
+    # Allow user to trigger credibility check directly from chat by prefix
+    # Example: [Credibility Check] ...
+    ui_text = user_input.strip()
+    combined = ui_text
+
+    if ui_text.lower().startswith("[credibility check]"):
+        combined = "CREDIBILITY_CHECK: " + ui_text[len("[credibility check]"):].strip()
+
+    combined = apply_mode_hint(combined)
+
+    st.session_state.messages.append({"role": "user", "content": ui_text})
+    render_user_message(ui_text)
+
+    thinking_ph = show_thinking()
+    answer = st.session_state.pipeline.answer(combined, chat_history=st.session_state.messages)
+    thinking_ph.empty()
+
+    answer = normalize_output(answer)
     st.session_state.messages.append({"role": "assistant", "content": answer})
     render_bot_message(answer)
