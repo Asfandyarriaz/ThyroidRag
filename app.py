@@ -57,8 +57,6 @@ for msg in st.session_state.messages:
 
 # --- Compose prompt with user preferences ---
 def apply_mode_hint(user_text: str) -> str:
-    # Keep this lightweight — QA pipeline already routes modes too,
-    # but adding a hint improves reliability.
     if mode == "Short":
         return f"{user_text}\n\n(Answer in short mode.)"
     if mode == "Evidence":
@@ -69,16 +67,19 @@ def apply_mode_hint(user_text: str) -> str:
 user_input = st.chat_input("Ask about thyroid cancer…")
 
 if user_input:
-    # If credibility is enabled and claim box has text, we prefer that claim
+    # If credibility is enabled and claim box has text, prefer the claim box
     if credibility_on and claim_text.strip():
         combined = f"Check credibility: {claim_text.strip()}"
+        display_user_text = claim_text.strip()
     else:
         combined = user_input.strip()
+        display_user_text = user_input.strip()
 
     combined = apply_mode_hint(combined)
 
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    render_user_message(user_input)
+    # Store/display what the user actually asked
+    st.session_state.messages.append({"role": "user", "content": display_user_text})
+    render_user_message(display_user_text)
 
     show_thinking()
 
