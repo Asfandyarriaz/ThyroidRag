@@ -9,8 +9,6 @@ from rapidfuzz import fuzz, process
 
 logging.basicConfig(level=logging.INFO)
 
-# -------------------- Routing phrases --------------------
-
 META_PHRASES = [
     "tell me about yourself",
     "who are you",
@@ -56,7 +54,6 @@ EVIDENCE_PHRASES = [
 SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
 LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
 
-# High-signal anchors for thyroid-only scope detection
 SCOPE_ANCHORS = [
     "thyroid",
     "thyroid cancer",
@@ -74,7 +71,6 @@ SCOPE_ANCHORS = [
     "ret",
 ]
 
-# Evidence level -> name + weight (higher = higher confidence)
 EVIDENCE_LEVEL_INFO: Dict[int, Tuple[str, float]] = {
     1: ("Guidelines / Consensus", 1.00),
     2: ("Systematic Review / Meta-analysis", 0.90),
@@ -85,7 +81,7 @@ EVIDENCE_LEVEL_INFO: Dict[int, Tuple[str, float]] = {
     7: ("Case Reports / Series", 0.40),
 }
 
-# Context safety caps
+# Context caps (prevents huge prompts / 400 errors)
 MAX_SOURCES = 6
 MAX_CHUNKS_PER_SOURCE = 2
 MAX_EXCERPT_CHARS = 900
@@ -93,9 +89,8 @@ MAX_TOTAL_CONTEXT_CHARS = 6500
 
 
 def _norm(text: str) -> str:
-    """Lowercase + normalize whitespace + strip punctuation."""
     t = (text or "").strip().lower()
-    t = re.sub(r"[\s]+", " ", t)
+    t = re.sub(r"\s+", " ", t)
     t = re.sub(r"[^\w\s]", "", t)
     return t
 
@@ -128,8 +123,6 @@ class QAPipeline:
         self.agent_instructions = self._load_instruction(agent_path)
         self.instruction_text = self._combine_instructions()
 
-    # -------------------- instruction loading --------------------
-
     def _load_instruction(self, file_path: Path) -> str:
         if not file_path.exists():
             logging.warning(f"Instruction file {file_path} not found.")
@@ -148,7 +141,7 @@ class QAPipeline:
             parts.append(self.rag_instructions)
         return "\n\n".join(parts).strip()
 
-    # -------------------- routing helpers --------------------
+    # -------- routing helpers --------
 
     def _is_meta_question(self, q: str) -> bool:
         qn = _norm(q)
@@ -182,7 +175,7 @@ class QAPipeline:
         )
 
     def _extract_term(self, q: str) -> str:
-        raw = q.strip()
+        raw = (q or "").strip()
         raw = re.sub(r"[?!.]+$", "", raw).strip()
         ql = raw.lower()
         for prefix in ("what is", "define", "explain", "tell me about", "overview of", "describe"):
@@ -205,7 +198,7 @@ class QAPipeline:
             return "short"
         return "standard"
 
-    # -------------------- RapidFuzz scope check --------------------
+    # -------- scope check (RapidFuzz) --------
 
     def _is_in_scope(self, q: str) -> bool:
         qn = _norm(q)
@@ -222,7 +215,7 @@ class QAPipeline:
         match = process.extractOne(qn, self._scope_anchors_norm, scorer=fuzz.token_set_ratio)
         return bool(match and match[1] >= 75)
 
-    # -------------------- level-filter parsing --------------------
+    # -------- level filter parsing --------
 
     def _parse_level_filter(self, q: str) -> Optional[List[int]]:
         qn = _norm(q)
@@ -255,7 +248,7 @@ class QAPipeline:
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
-    # -------------------- confidence rating --------------------
+    # -------- confidence rating --------
 
     def _safe_int(self, x: Any) -> Optional[int]:
         try:
@@ -285,6 +278,7 @@ class QAPipeline:
         weights = [EVIDENCE_LEVEL_INFO[l][1] for l in levels]
         avg_weight = sum(weights) / len(weights)
 
+        # small penalty if few unique sources
         n = len(levels)
         if n == 1:
             avg_weight *= 0.90
@@ -303,9 +297,7 @@ class QAPipeline:
         for l in levels:
             counts[l] = counts.get(l, 0) + 1
 
-        parts = []
-        for lvl in sorted(counts.keys()):
-            parts.append(f"Level {lvl} ({EVIDENCE_LEVEL_INFO[lvl][0]}): {counts[lvl]}")
+        parts = [f"Level {lvl} ({EVIDENCE_LEVEL_INFO[lvl][0]}): {counts[lvl]}" for lvl in sorted(counts)]
         breakdown = "; ".join(parts)
 
         return {"label": label, "score": score, "breakdown": breakdown}
@@ -317,7 +309,7 @@ class QAPipeline:
             f"- Based on retrieved evidence levels: {conf['breakdown']}"
         )
 
-    # -------------------- paper mode --------------------
+    # -------- paper mode --------
 
     def _extract_pmid(self, q: str) -> Optional[int]:
         m = re.search(r"\bpmid\b[:\s]*([0-9]{6,10})\b", (q or "").lower())
@@ -380,7 +372,7 @@ class QAPipeline:
 
         return "\n".join(lines)
 
-    # -------------------- context builder --------------------
+    # -------- context builder --------
 
     def _build_context(self, retrieved: List[Dict[str, Any]]) -> str:
         def _score(x: Dict[str, Any]) -> float:
@@ -446,21 +438,18 @@ class QAPipeline:
 
         return "\n".join(parts).strip()
 
-    # -------------------- answer generation prompt (NO placeholder) --------------------
+    # -------- prompt builder --------
 
     def _build_single_call_prompt(self, question: str, context: str, mode: str) -> str:
         if mode == "short":
-            bullets_summary = "2–3"
+            bullets_summary = "1–2"
             include_evidence_section = False
-            quotes = "0"
         elif mode == "evidence":
             bullets_summary = "3–6"
             include_evidence_section = True
-            quotes = "3–5"
         else:
             bullets_summary = "3–6"
             include_evidence_section = False
-            quotes = "0"
 
         format_lines = [
             "A) Definition",
@@ -473,11 +462,12 @@ class QAPipeline:
             format_lines += [
                 "",
                 "C) Verbatim evidence",
-                f"- {quotes} short direct quotes (<= 35 words), each as: \"<quote>\" (Title, Year, PMID: <PMID>)",
+                "- 3–5 short direct quotes (<= 35 words), each as: \"<quote>\" (Title, Year, PMID: <PMID>)",
             ]
 
         output_format = "\n".join(format_lines)
 
+        # keep the system instruction text small to avoid 400s
         prompt = f"""
 You are a cautious clinical assistant answering thyroid cancer questions using ONLY the provided excerpts.
 
@@ -498,7 +488,7 @@ Context (excerpts):
 """.strip()
         return prompt
 
-    # -------------------- post-processing (insert confidence + cleanup) --------------------
+    # -------- post-processing --------
 
     def _insert_confidence_before_summary(self, draft: str, conf_block: str) -> str:
         if not draft:
@@ -508,8 +498,11 @@ Context (excerpts):
             return draft.replace(marker, f"{conf_block}\n\n{marker}", 1)
         return f"{draft}\n\n{conf_block}".strip()
 
+    # -------- main API --------
+
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 5) -> str:
         try:
+            # meta questions (no retrieval)
             if self._is_meta_question(question):
                 return (
                     "I’m the assistant inside **Thyroid Cancer RAG Assistant**.\n\n"
@@ -519,9 +512,11 @@ Context (excerpts):
                     "staging, surgery, radioiodine (RAI), follow-up, recurrence, and prognosis."
                 )
 
+            # parse level filter and strip from retrieval query
             requested_levels = self._parse_level_filter(question)
             q_clean = self._strip_level_filter_text(question)
 
+            # thyroid-only scope gate
             if not self._is_in_scope(q_clean):
                 return (
                     "I’m scoped to **thyroid cancer** questions only.\n\n"
@@ -529,25 +524,31 @@ Context (excerpts):
                     "surgery, radioiodine (RAI), follow-up, or recurrence."
                 )
 
+            # paper lookup mode
             if self._is_paper_request(question):
                 requested_pmid = self._extract_pmid(question)
                 retrieved = self.vector_store.search(q_clean, k=max(k, 12), levels=requested_levels)
                 return self._paper_lookup_response(retrieved, requested_pmid)
 
+            # choose output mode
             mode = self._select_mode(q_clean)
 
+            # retrieval query rewrite for definition-type prompts
             retrieval_query = q_clean
             if self._is_definition_question(q_clean):
                 term = self._extract_term(q_clean)
                 if term:
                     retrieval_query = f"definition of {term}"
 
+            # k tuning
             k_use = max(k, 8) if mode == "short" else max(k, 12)
             if requested_levels == [1]:
                 k_use = min(k_use, 6)
 
+            # retrieval
             retrieved = self.vector_store.search(retrieval_query, k=k_use, levels=requested_levels)
 
+            # fallback retrieval for broad prompts
             if not retrieved:
                 term = self._extract_term(q_clean)
                 expanded = f"overview of {term} thyroid cancer" if term else f"overview of {q_clean}"
@@ -561,9 +562,11 @@ Context (excerpts):
                     )
                 return "Not enough evidence in the retrieved sources."
 
+            # confidence
             conf = self._compute_confidence(retrieved)
             conf_block = self._format_confidence_block(conf)
 
+            # context + LLM call
             context = self._build_context(retrieved)
             prompt = self._build_single_call_prompt(q_clean, context, mode=mode)
 
