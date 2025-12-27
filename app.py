@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 
 from core.pipeline_loader import init_pipeline
@@ -30,7 +31,7 @@ with st.sidebar:
     credibility_on = st.toggle(
         "Enable credibility check mode",
         value=False,
-        help="Paste a claim and the assistant will verify it against indexed thyroid cancer papers.",
+        help="Paste a claim and the assistant will verify it against the indexed thyroid cancer papers.",
     )
 
     claim_text = ""
@@ -40,6 +41,7 @@ with st.sidebar:
             placeholder="Example: 'Radioiodine ablation decreases local recurrence risk in papillary thyroid cancer.'",
             height=120,
         )
+        st.caption("Tip: You can also type in chat — this box is just a convenience.")
 
     st.markdown("---")
     if st.button("Clear chat"):
@@ -54,6 +56,7 @@ for msg in st.session_state.messages:
         render_bot_message(msg["content"])
 
 def apply_mode_hint(user_text: str) -> str:
+    # lightweight hint; your QA pipeline also routes modes
     if mode == "Short":
         return f"{user_text}\n\n(Answer in short mode.)"
     if mode == "Evidence":
@@ -63,24 +66,29 @@ def apply_mode_hint(user_text: str) -> str:
 user_input = st.chat_input("Ask about thyroid cancer…")
 
 if user_input:
+    user_text = user_input.strip()
+
+    # What we send to pipeline (may be different from what we display)
     if credibility_on and claim_text.strip():
         combined = f"Check credibility: {claim_text.strip()}"
-        display_user_text = claim_text.strip()
     else:
-        combined = user_input.strip()
-        display_user_text = user_input.strip()
+        combined = user_text
 
     combined = apply_mode_hint(combined)
 
-    st.session_state.messages.append({"role": "user", "content": display_user_text})
-    render_user_message(display_user_text)
+    # Store/render the actual user typed message
+    st.session_state.messages.append({"role": "user", "content": user_text})
+    render_user_message(user_text)
 
-    show_thinking()
+    # Thinking placeholder (will be cleared)
+    thinking_ph = show_thinking()
 
     answer = st.session_state.pipeline.answer(
         combined,
         chat_history=st.session_state.messages,
     )
+
+    thinking_ph.empty()
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
     render_bot_message(answer)
