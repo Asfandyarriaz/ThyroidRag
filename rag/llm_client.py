@@ -1,151 +1,155 @@
+# rag/llm_client.py
 import time
 import logging
-from typing import Optional, Any, List
+from typing import Any, Optional
 
 from openai import OpenAI
-from openai import (
-    BadRequestError,
-    RateLimitError,
-    APIConnectionError,
-    APITimeoutError,
-    InternalServerError,
-    AuthenticationError,
-    PermissionDeniedError,
-    NotFoundError,
-)
+from openai import BadRequestError, RateLimitError, APIConnectionError, InternalServerError
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
 class LLMClient:
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, max_output_tokens: int = 700):
         self.client = OpenAI(api_key=api_key)
-        self.model = (model or "").strip()
+        self.model = model
+        self.max_output_tokens = max_output_tokens
 
-    def _as_dict(self, resp: Any) -> dict:
+    def _extract_text_from_any(self, obj: Any) -> str:
         """
-        Convert OpenAI SDK response object to a plain dict safely.
+        Tries hard to extract model text from different Responses shapes.
+        Works with both SDK objects and dict-like responses.
         """
-        if isinstance(resp, dict):
-            return resp
-        if hasattr(resp, "model_dump"):
-            try:
-                return resp.model_dump()
-            except Exception:
-                pass
-        if hasattr(resp, "to_dict"):
-            try:
-                return resp.to_dict()
-            except Exception:
-                pass
-        # last resort
+        # 1) SDK convenience property (best case)
         try:
-            return dict(resp)  # may fail
-        except Exception:
-            return {}
-
-    def _collect_texts(self, obj: Any, out: List[str]) -> None:
-        """
-        Recursively collect text fields from nested dict/list structures.
-        This reliably catches Responses API formats like:
-          output -> [ { content: [ { type: "output_text", text: "..." } ] } ]
-        """
-        if obj is None:
-            return
-
-        if isinstance(obj, dict):
-            # Most common: {"type":"output_text","text":"..."}
-            t = obj.get("text")
+            t = getattr(obj, "output_text", None)
             if isinstance(t, str) and t.strip():
-                # If it has a type, prefer output_text/text-like blocks
-                typ = (obj.get("type") or "").lower()
-                if typ in ("output_text", "text", "message", ""):
-                    out.append(t.strip())
+                return t.strip()
+        except Exception:
+            pass
 
-            # Recurse
-            for v in obj.values():
-                self._collect_texts(v, out)
-
-        elif isinstance(obj, list):
-            for it in obj:
-                self._collect_texts(it, out)
-
-    def _extract_text(self, resp: Any) -> str:
-        # 1) Prefer the convenience field when present
-        t = getattr(resp, "output_text", None)
-        if isinstance(t, str) and t.strip():
-            return t.strip()
-
-        # 2) Try dict form
-        d = self._as_dict(resp)
-        t2 = d.get("output_text")
-        if isinstance(t2, str) and t2.strip():
-            return t2.strip()
-
-        # 3) Deep-collect from output/content blocks
-        texts: List[str] = []
-        self._collect_texts(d.get("output"), texts)
-
-        # remove duplicates while preserving order
-        seen = set()
-        uniq = []
-        for s in texts:
-            if s not in seen:
-                uniq.append(s)
-                seen.add(s)
-
-        return "\n".join(uniq).strip()
-
-    def ask(self, prompt: str, attempts: int = 3) -> str:
-        if not self.model:
-            return "⚠️ OPENAI_MODEL is missing. Set it in Streamlit Secrets as OPENAI_MODEL."
-
-        last_err: Optional[str] = None
-
-        for attempt in range(1, attempts + 1):
+        # 2) Convert SDK object -> dict if possible
+        data = None
+        if isinstance(obj, dict):
+            data = obj
+        else:
             try:
-                resp = self.client.responses.create(
+                if hasattr(obj, "model_dump"):
+                    data = obj.model_dump()
+                elif hasattr(obj, "dict"):
+                    data = obj.dict()
+            except Exception:
+                data = None
+
+        if not isinstance(data, dict):
+            return ""
+
+        # 3) Sometimes there's a top-level `text` container
+        txt = data.get("text")
+        if isinstance(txt, str) and txt.strip():
+            return txt.strip()
+        if isinstance(txt, dict):
+            for k in ("value", "text"):
+                v = txt.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+
+        # 4) Standard Responses structure: output -> message -> content -> output_text
+        outputs = data.get("output", [])
+        collected = []
+
+        def walk(x: Any):
+            if x is None:
+                return
+            if isinstance(x, str):
+                s = x.strip()
+                if s:
+                    collected.append(s)
+                return
+            if isinstance(x, list):
+                for it in x:
+                    walk(it)
+                return
+            if isinstance(x, dict):
+                # common patterns:
+                # {type: "output_text", text: "..."} OR {text: {value: "..."}}
+                t1 = x.get("text")
+                if isinstance(t1, str) and t1.strip():
+                    collected.append(t1.strip())
+                elif isinstance(t1, dict):
+                    v = t1.get("value") or t1.get("text")
+                    if isinstance(v, str) and v.strip():
+                        collected.append(v.strip())
+
+                # recurse into likely containers
+                for key in ("content", "output", "message", "messages"):
+                    if key in x:
+                        walk(x[key])
+
+        walk(outputs)
+
+        # As a last resort, walk the top-level `output` and `text` only
+        if not collected:
+            walk(data.get("output"))
+            walk(data.get("text"))
+
+        # Deduplicate lightly
+        out = "\n".join([c for c in collected if c])
+        return out.strip()
+
+    def ask(self, prompt: str, attempt: int = 1, last_text: Optional[str] = None) -> str:
+        if attempt > 5:
+            return last_text or "⚠️ The LLM service is temporarily unavailable. Please try again shortly."
+
+        try:
+            # IMPORTANT: do NOT pass temperature for gpt-5-nano (your logs show 400 when temperature is sent)
+            resp = self.client.responses.create(
+                model=self.model,
+                input=prompt,
+                max_output_tokens=self.max_output_tokens,
+                # Optional speed-up for GPT-5 family (safe if supported; if not supported it may 400)
+                reasoning={"effort": "minimal"},
+            )
+
+            text = self._extract_text_from_any(resp)
+            if text:
+                return text
+
+            # If no text, retry once without reasoning param (some accounts/models vary)
+            if attempt == 1:
+                resp2 = self.client.responses.create(
                     model=self.model,
                     input=prompt,
-                    max_output_tokens=900,
+                    max_output_tokens=self.max_output_tokens,
                 )
+                text2 = self._extract_text_from_any(resp2)
+                if text2:
+                    return text2
 
-                text = self._extract_text(resp)
-                if text:
-                    return text
+            logger.warning("LLM returned no text.")
+            time.sleep(0.5 * attempt)
+            return self.ask(prompt, attempt + 1, last_text=last_text)
 
-                last_err = "No text returned from the LLM."
-                # Helpful log (no secrets): log top-level keys so we can see shape
-                try:
-                    d = self._as_dict(resp)
-                    logger.warning("LLM returned no text. Top-level keys: %s", list(d.keys()))
-                except Exception:
-                    pass
+        except BadRequestError as e:
+            # Don't retry 400s (usually model/params/prompt)
+            msg = str(e)
+            logger.error(f"OpenAI 400 BadRequestError: {msg}")
+            return (
+                "⚠️ OpenAI rejected the request (400 Bad Request).\n\n"
+                "Common causes:\n"
+                "- OPENAI_MODEL is wrong/blank\n"
+                "- prompt/context too large\n"
+                "- unsupported params for the selected model\n\n"
+                "Check Streamlit logs for details."
+            )
 
-                time.sleep(0.4 * attempt)
+        except (RateLimitError, APIConnectionError, InternalServerError) as e:
+            logger.warning(f"Transient LLM error (attempt {attempt}/5): {e}")
+            time.sleep(0.5 * attempt)
+            return self.ask(prompt, attempt + 1, last_text=last_text)
 
-            except BadRequestError as e:
-                logger.error("OpenAI 400 BadRequestError: %s", str(e))
-                return "⚠️ OpenAI rejected the request (400). Check Streamlit logs for the exact reason."
-
-            except (AuthenticationError, PermissionDeniedError, NotFoundError) as e:
-                logger.error("OpenAI auth/model error: %s", str(e))
-                return (
-                    "⚠️ OpenAI auth/model error.\n\n"
-                    "Check:\n"
-                    "- OPENAI_API_KEY is valid\n"
-                    "- OPENAI_MODEL exists and your key has access"
-                )
-
-            except (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError) as e:
-                logger.warning("OpenAI retryable error (attempt %s/%s): %s", attempt, attempts, str(e))
-                last_err = "LLM temporarily unavailable."
-                time.sleep(0.8 * attempt)
-
-            except Exception as e:
-                logger.exception("Unexpected LLM error: %s", str(e))
-                last_err = "Unexpected LLM error."
-                time.sleep(0.8 * attempt)
-
-        return f"⚠️ {last_err or 'The LLM service is temporarily unavailable. Please try again shortly.'}"
+        except Exception as e:
+            logger.warning(f"Unknown LLM error (attempt {attempt}/5): {e}")
+            time.sleep(0.5 * attempt)
+            return self.ask(prompt, attempt + 1, last_text=last_text)
