@@ -1,12 +1,12 @@
 # core/pipeline_loader.py
 import streamlit as st
+from qdrant_client import QdrantClient
 
 from config import Config
 from rag.embedder import Embedder
 from rag.qa_pipeline import QAPipeline
 from rag.llm_client import LLMClient
 from rag.vector_store_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
 
 
 @st.cache_resource(show_spinner=False)
