@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 
 from core.pipeline_loader import init_pipeline
@@ -31,7 +30,7 @@ with st.sidebar:
     credibility_on = st.toggle(
         "Enable credibility check mode",
         value=False,
-        help="Paste a claim and the assistant will verify it against the indexed thyroid cancer papers.",
+        help="Paste a claim and the assistant will verify it against indexed thyroid cancer papers.",
     )
 
     claim_text = ""
@@ -41,7 +40,6 @@ with st.sidebar:
             placeholder="Example: 'Radioiodine ablation decreases local recurrence risk in papillary thyroid cancer.'",
             height=120,
         )
-        st.caption("Tip: Ask in chat too — this box just makes it easier.")
 
     st.markdown("---")
     if st.button("Clear chat"):
@@ -55,7 +53,6 @@ for msg in st.session_state.messages:
     else:
         render_bot_message(msg["content"])
 
-# --- Compose prompt with user preferences ---
 def apply_mode_hint(user_text: str) -> str:
     if mode == "Short":
         return f"{user_text}\n\n(Answer in short mode.)"
@@ -63,11 +60,9 @@ def apply_mode_hint(user_text: str) -> str:
         return f"{user_text}\n\n(Include verbatim evidence quotes.)"
     return user_text
 
-# --- input ---
 user_input = st.chat_input("Ask about thyroid cancer…")
 
 if user_input:
-    # If credibility is enabled and claim box has text, prefer the claim box
     if credibility_on and claim_text.strip():
         combined = f"Check credibility: {claim_text.strip()}"
         display_user_text = claim_text.strip()
@@ -77,7 +72,6 @@ if user_input:
 
     combined = apply_mode_hint(combined)
 
-    # Store/display what the user actually asked
     st.session_state.messages.append({"role": "user", "content": display_user_text})
     render_user_message(display_user_text)
 
