@@ -15,18 +15,32 @@ class QdrantVectorStore:
         self.embedder = embedder
 
     def _build_level_filter(self, levels: Optional[List[int]]) -> Optional[rest.Filter]:
+        """
+        Robust filter:
+        - avoids minimum_should_match (not supported in qdrant-client 1.16.x)
+        - matches evidence_level stored as int OR string (common ingestion mismatch)
+        """
         if not levels:
             return None
 
-        should_conditions = [
-            rest.FieldCondition(
-                key="evidence_level",
-                match=rest.MatchValue(value=int(lvl)),
+        should_conditions: List[rest.FieldCondition] = []
+        for lvl in levels:
+            lvl_int = int(lvl)
+            # match int
+            should_conditions.append(
+                rest.FieldCondition(
+                    key="evidence_level",
+                    match=rest.MatchValue(value=lvl_int),
+                )
             )
-            for lvl in levels
-        ]
+            # match string
+            should_conditions.append(
+                rest.FieldCondition(
+                    key="evidence_level",
+                    match=rest.MatchValue(value=str(lvl_int)),
+                )
+            )
 
-        # qdrant-client 1.16.x Filter does NOT support minimum_should_match
         return rest.Filter(should=should_conditions)
 
     def search(self, query_text: str, k: int = 5, levels: Optional[List[int]] = None) -> List[Dict[str, Any]]:
@@ -52,12 +66,12 @@ class QdrantVectorStore:
             )
 
             if qfilter is not None:
+                # some versions use query_filter; some use filter
                 kwargs["query_filter"] = qfilter
 
             try:
                 response = self.client.query_points(**kwargs)
             except TypeError:
-                # Some client versions expect `filter=` instead of `query_filter=`
                 if "query_filter" in kwargs:
                     kwargs["filter"] = kwargs.pop("query_filter")
                 response = self.client.query_points(**kwargs)
@@ -66,8 +80,8 @@ class QdrantVectorStore:
             for hit in response.points:
                 payload = hit.payload or {}
                 results.append({
-                    "text": payload.get("text", ""),
-                    "title": payload.get("title", ""),
+                    "text": payload.get("text", "") or "",
+                    "title": payload.get("title", "") or "",
                     "pmid": payload.get("pmid", None),
                     "doi": payload.get("doi", None),
                     "year": payload.get("year", None),
