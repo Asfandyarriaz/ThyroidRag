@@ -12,41 +12,22 @@ page_title()
 
 
 def normalize_output(text: str) -> str:
-    """Reduce huge blank gaps in LLM output without changing meaning."""
     if not text:
         return text
     t = text.strip()
-    # collapse 3+ blank lines -> 2
     t = re.sub(r"\n{3,}", "\n\n", t)
-    # trim trailing spaces on each line
     t = "\n".join(line.rstrip() for line in t.splitlines())
     return t.strip()
 
 
-# --- init pipeline once ---
+# init pipeline once
 if "pipeline" not in st.session_state:
     st.session_state.pipeline = init_pipeline()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- disclaimer on first load ---
-if "disclaimer_shown" not in st.session_state:
-    st.session_state.disclaimer_shown = True
-    st.session_state.messages.insert(
-        0,
-        {
-            "role": "assistant",
-            "content": (
-                '<div class="disclaimer">'
-                "⚠️ <b>Disclaimer:</b> This tool is for research/education only and does not provide medical advice. "
-                "For clinical decisions, consult guidelines and qualified healthcare professionals."
-                "</div>"
-            ),
-        },
-    )
-
-# --- Sidebar controls ---
+# sidebar controls
 with st.sidebar:
     st.markdown("### ⚙️ Controls")
     mode = st.radio(
@@ -58,18 +39,16 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # "Credibility Check" label with hover tooltip
     st.markdown(
         '<span title="Check claims from other sources by verifying them against the indexed thyroid cancer papers.">'
         "### ✅ Credibility Check"
         "</span>",
         unsafe_allow_html=True,
     )
-
     credibility_on = st.toggle(
         "Enable",
         value=False,
-        help="When enabled, you can paste a claim and run a credibility check.",
+        help="When enabled, paste a claim and press the button to run the check.",
     )
 
     claim_text = ""
@@ -85,11 +64,21 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
-        st.session_state.disclaimer_shown = False
         st.rerun()
 
 
-# --- render history ---
+# show disclaimer once at top (NOT as a chat message)
+if "disclaimer_shown" not in st.session_state:
+    st.session_state.disclaimer_shown = True
+    st.markdown(
+        '<div class="disclaimer">'
+        "⚠️ <b>Disclaimer:</b> This tool is for research/education only and does not provide medical advice. "
+        "For clinical decisions, consult guidelines and qualified healthcare professionals."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+# render chat history
 for msg in st.session_state.messages:
     if msg["role"] == "user":
         render_user_message(msg["content"])
@@ -98,7 +87,6 @@ for msg in st.session_state.messages:
 
 
 def apply_mode_hint(user_text: str) -> str:
-    # lightweight hint; pipeline also routes modes
     if mode == "Short":
         return f"{user_text}\n\n(Answer in short mode.)"
     if mode == "Evidence":
@@ -106,10 +94,9 @@ def apply_mode_hint(user_text: str) -> str:
     return user_text
 
 
-# --- input ---
 user_input = st.chat_input("Ask about thyroid cancer…")
 
-# Sidebar credibility run has priority if pressed
+# sidebar credibility run (explicit)
 if run_cred and claim_text.strip():
     combined = f"CREDIBILITY_CHECK: {claim_text.strip()}"
     combined = apply_mode_hint(combined)
@@ -126,8 +113,6 @@ if run_cred and claim_text.strip():
     render_bot_message(answer)
 
 elif user_input:
-    # Allow user to trigger credibility check directly from chat by prefix
-    # Example: [Credibility Check] ...
     ui_text = user_input.strip()
     combined = ui_text
 
