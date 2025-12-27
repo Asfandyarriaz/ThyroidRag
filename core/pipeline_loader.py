@@ -15,7 +15,7 @@ def init_pipeline():
 
     qdrant_client = QdrantClient(
         url=cfg.QDRANT_URL,
-        api_key=cfg.QDRANT_API_KEY
+        api_key=cfg.QDRANT_API_KEY,
     )
 
     embedder = Embedder(cfg.EMBEDDING_MODEL)
@@ -23,12 +23,12 @@ def init_pipeline():
     vector_store = QdrantVectorStore(
         client=qdrant_client,
         collection_name=cfg.QDRANT_COLLECTION_NAME,
-        embedder=embedder
+        embedder=embedder,
     )
 
     llm_client = LLMClient(
         api_key=cfg.OPENAI_API_KEY,
-        model=cfg.OPENAI_MODEL
+        model=cfg.OPENAI_MODEL,
     )
 
     return QAPipeline(embedder, vector_store, llm_client)
