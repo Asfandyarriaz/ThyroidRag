@@ -41,7 +41,7 @@ with st.sidebar:
 
     st.markdown(
         '<span title="Check claims from other sources by verifying them against the indexed thyroid cancer papers.">'
-        "### ✅ Credibility Check"
+        "✅ Credibility Check"
         "</span>",
         unsafe_allow_html=True,
     )
