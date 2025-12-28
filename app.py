@@ -29,7 +29,7 @@ if "messages" not in st.session_state:
 
 # sidebar controls
 with st.sidebar:
-    st.markdown("### ⚙️ Controls")
+    st.markdown("⚙️ Controls")
     mode = st.radio(
         "Answer style",
         ["Short", "Standard", "Evidence"],
