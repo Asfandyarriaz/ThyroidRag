@@ -17,38 +17,36 @@ class QdrantVectorStore:
     def _build_level_filter(self, levels: Optional[List[int]]) -> Optional[rest.Filter]:
         """
         Robust filter:
-        - avoids minimum_should_match (not supported in qdrant-client 1.16.x)
-        - matches evidence_level stored as int OR string (common ingestion mismatch)
+        - no minimum_should_match (not supported in qdrant-client 1.16.x)
+        - matches evidence_level stored as int OR string OR float-like
+        - supports both keys: 'evidence_level' and 'Evidence_Level'
         """
         if not levels:
             return None
 
-        should_conditions: List[rest.FieldCondition] = []
+        should: List[rest.FieldCondition] = []
+
+        keys = ["evidence_level", "Evidence_Level"]
         for lvl in levels:
             lvl_int = int(lvl)
-            # match int
-            should_conditions.append(
-                rest.FieldCondition(
-                    key="evidence_level",
-                    match=rest.MatchValue(value=lvl_int),
-                )
-            )
-            # match string
-            should_conditions.append(
-                rest.FieldCondition(
-                    key="evidence_level",
-                    match=rest.MatchValue(value=str(lvl_int)),
-                )
-            )
+            lvl_str = str(lvl_int)
+            lvl_float = float(lvl_int)
 
-        return rest.Filter(should=should_conditions)
+            for key in keys:
+                # match int
+                should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_int)))
+                # match string
+                should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_str)))
+                # match float-ish (only helps if you accidentally stored 7.0)
+                should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_float)))
+
+        return rest.Filter(should=should)
 
     def search(self, query_text: str, k: int = 5, levels: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         if self.embedder is None:
             raise ValueError("Embedder is not initialized.")
 
         query_vec = self.embedder.encode_query(query_text)
-
         if isinstance(query_vec, np.ndarray) and query_vec.ndim == 2:
             query_vec = query_vec[0]
         if isinstance(query_vec, np.ndarray):
@@ -66,12 +64,11 @@ class QdrantVectorStore:
             )
 
             if qfilter is not None:
-                # some versions use query_filter; some use filter
-                kwargs["query_filter"] = qfilter
-
+                kwargs["query_filter"] = qfilter  # some versions
             try:
                 response = self.client.query_points(**kwargs)
             except TypeError:
+                # other versions
                 if "query_filter" in kwargs:
                     kwargs["filter"] = kwargs.pop("query_filter")
                 response = self.client.query_points(**kwargs)
@@ -85,7 +82,7 @@ class QdrantVectorStore:
                     "pmid": payload.get("pmid", None),
                     "doi": payload.get("doi", None),
                     "year": payload.get("year", None),
-                    "evidence_level": payload.get("evidence_level", None),
+                    "evidence_level": payload.get("evidence_level", payload.get("Evidence_Level", None)),
                     "score": getattr(hit, "score", None),
                 })
             return results
