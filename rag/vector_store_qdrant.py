@@ -17,28 +17,26 @@ class QdrantVectorStore:
     def _build_level_filter(self, levels: Optional[List[int]]) -> Optional[rest.Filter]:
         """
         Robust filter:
-        - no minimum_should_match (not supported in qdrant-client 1.16.x)
-        - matches evidence_level stored as int OR string OR float-like
+        - works without minimum_should_match
+        - matches evidence_level stored as int OR string
         - supports both keys: 'evidence_level' and 'Evidence_Level'
+        - avoids float values (can crash serialization in qdrant-client)
         """
         if not levels:
             return None
 
         should: List[rest.FieldCondition] = []
-
         keys = ["evidence_level", "Evidence_Level"]
+
         for lvl in levels:
             lvl_int = int(lvl)
             lvl_str = str(lvl_int)
-            lvl_float = float(lvl_int)
+            lvl_str_dot0 = f"{lvl_int}.0"  # handles accidental string "7.0"
 
             for key in keys:
-                # match int
                 should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_int)))
-                # match string
                 should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_str)))
-                # match float-ish (only helps if you accidentally stored 7.0)
-                should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_float)))
+                should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_str_dot0)))
 
         return rest.Filter(should=should)
 
@@ -47,6 +45,7 @@ class QdrantVectorStore:
             raise ValueError("Embedder is not initialized.")
 
         query_vec = self.embedder.encode_query(query_text)
+
         if isinstance(query_vec, np.ndarray) and query_vec.ndim == 2:
             query_vec = query_vec[0]
         if isinstance(query_vec, np.ndarray):
@@ -64,11 +63,12 @@ class QdrantVectorStore:
             )
 
             if qfilter is not None:
-                kwargs["query_filter"] = qfilter  # some versions
+                kwargs["query_filter"] = qfilter  # some client versions
+
             try:
                 response = self.client.query_points(**kwargs)
             except TypeError:
-                # other versions
+                # other client versions use filter=
                 if "query_filter" in kwargs:
                     kwargs["filter"] = kwargs.pop("query_filter")
                 response = self.client.query_points(**kwargs)
@@ -88,5 +88,5 @@ class QdrantVectorStore:
             return results
 
         except Exception as e:
-            logging.error(f"Error during vector search: {e}")
+            logging.exception(f"Error during vector search: {e}")
             return []
