@@ -1,5 +1,5 @@
 # rag/vector_store_qdrant.py
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Dict, Optional
 import logging
 import numpy as np
 
@@ -17,49 +17,39 @@ class QdrantVectorStore:
 
     def _build_level_filter(self, levels: Optional[List[int]]) -> Optional[rest.Filter]:
         """
-        Builds a Qdrant filter like:
-          evidence_level IN {1,2,3}
+        Evidence level filter (INT ONLY).
 
-        Robustness:
-        - Qdrant MatchValue exact match is type-sensitive, so we match:
-            int, "int", and sometimes "int.0"
-        - Some datasets use Evidence_Level instead of evidence_level.
+        Why int-only?
+        - If you indexed payload evidence_level as integer in Qdrant,
+          sending a string match (e.g. "1") can cause server-side filter errors.
         """
         if not levels:
             return None
 
-        keys = ["evidence_level", "Evidence_Level"]
-        should: List[rest.FieldCondition] = []
+        levels_int = [int(x) for x in levels]
 
-        for lvl in levels:
-            lvl_int = int(lvl)
-            lvl_str = str(lvl_int)
-            lvl_str_dot0 = f"{lvl_int}.0"  # handles accidental string "7.0"
+        # OR across levels: evidence_level == any of levels_int
+        should = [
+            rest.FieldCondition(
+                key="evidence_level",
+                match=rest.MatchValue(value=lvl),
+            )
+            for lvl in levels_int
+        ]
 
-            for key in keys:
-                # exact match: int
-                should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_int)))
-                # exact match: "int"
-                should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_str)))
-                # exact match: "int.0"
-                should.append(rest.FieldCondition(key=key, match=rest.MatchValue(value=lvl_str_dot0)))
-
-        # should = OR
         return rest.Filter(should=should)
 
     def search(
         self,
         query_text: str,
         k: int = 5,
-        levels: Optional[List[int]] = None,
+        levels: Optional[List[int]] = None
     ) -> List[Dict[str, Any]]:
         if self.embedder is None:
             raise ValueError("Embedder is not initialized.")
 
-        # Create query embedding
         query_vec = self.embedder.encode_query(query_text)
 
-        # Normalize to Python list
         if isinstance(query_vec, np.ndarray) and query_vec.ndim == 2:
             query_vec = query_vec[0]
         if isinstance(query_vec, np.ndarray):
@@ -76,14 +66,14 @@ class QdrantVectorStore:
                 with_vectors=False,
             )
 
-            # Newer clients commonly accept query_filter=
             if qfilter is not None:
+                # qdrant-client versions vary: query_filter vs filter
                 kwargs["query_filter"] = qfilter
 
             try:
                 response = self.client.query_points(**kwargs)
             except TypeError:
-                # Older clients may expect filter= instead
+                # fallback for older clients
                 if "query_filter" in kwargs:
                     kwargs["filter"] = kwargs.pop("query_filter")
                 response = self.client.query_points(**kwargs)
@@ -91,18 +81,20 @@ class QdrantVectorStore:
             results: List[Dict[str, Any]] = []
             for hit in response.points:
                 payload = hit.payload or {}
-                results.append(
-                    {
-                        "text": payload.get("text", "") or "",
-                        "title": payload.get("title", "") or "",
-                        "pmid": payload.get("pmid", None),
-                        "doi": payload.get("doi", None),
-                        "year": payload.get("year", None),
-                        "evidence_level": payload.get("evidence_level", payload.get("Evidence_Level", None)),
-                        "score": getattr(hit, "score", None),
-                    }
-                )
+                results.append({
+                    "text": payload.get("text", "") or "",
+                    "title": payload.get("title", "") or "",
+                    "pmid": payload.get("pmid", None),
+                    "doi": payload.get("doi", None),
+                    "year": payload.get("year", None),
+                    "evidence_level": payload.get("evidence_level", None),
+                    "score": getattr(hit, "score", None),
+                })
 
+            logger.info(
+                "Qdrant search ok | k=%s | levels=%s | returned=%s",
+                k, levels, len(results)
+            )
             return results
 
         except Exception as e:
