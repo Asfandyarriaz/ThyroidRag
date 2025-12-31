@@ -81,6 +81,21 @@ EVIDENCE_LEVEL_INFO: Dict[int, Tuple[str, float]] = {
     7: ("Case Reports / Series", 0.40),
 }
 
+# NEW: user-language synonyms -> evidence level
+LEVEL_SYNONYMS: Dict[int, List[str]] = {
+    1: ["guideline", "guidelines", "practice guideline", "clinical guideline", "consensus", "consensus conference"],
+    2: ["systematic review", "systematic reviews", "meta analysis", "meta-analysis", "network meta", "network meta analysis"],
+    3: ["rct", "rcts", "randomized", "randomised", "randomized controlled trial", "controlled clinical trial", "phase iii", "phase iv"],
+    4: ["clinical trial", "clinical trials", "trial protocol", "equivalence trial", "phase i", "phase ii", "non randomized trial", "non-randomized trial"],
+    5: ["cohort", "cohort study", "cohort studies", "prospective", "retrospective"],
+    6: ["case control", "case-control", "case control study", "case-control study"],
+    7: ["case report", "case reports", "case series", "series", "personal narrative"],
+}
+
+# words users use for evidence hierarchy comparisons
+HIERARCHY_HIGH_WORDS = ["higher", "above", "better", "stronger", "top", "best", "greater"]
+HIERARCHY_LOW_WORDS = ["lower", "below", "worse", "weaker", "less"]
+
 MAX_SOURCES = 6
 MAX_CHUNKS_PER_SOURCE = 2
 MAX_EXCERPT_CHARS = 900
@@ -90,7 +105,7 @@ MAX_TOTAL_CONTEXT_CHARS = 6500
 def _norm(text: str) -> str:
     t = (text or "").strip().lower()
     t = re.sub(r"[\s]+", " ", t)
-    t = re.sub(r"[^\w\s]", "", t)
+    t = re.sub(r"[^\w\s\-\[\]]", "", t)  # keep - and [] for patterns like [credibility check]
     return t
 
 
@@ -121,6 +136,8 @@ class QAPipeline:
         self.rag_instructions = self._load_instruction(rag_path)
         self.agent_instructions = self._load_instruction(agent_path)
         self.instruction_text = self._combine_instructions()
+
+    # -------------------- instruction loading --------------------
 
     def _load_instruction(self, file_path: Path) -> str:
         if not file_path.exists():
@@ -174,7 +191,7 @@ class QAPipeline:
         )
 
     def _extract_term(self, q: str) -> str:
-        raw = q.strip()
+        raw = (q or "").strip()
         raw = re.sub(r"[?!.]+$", "", raw).strip()
         ql = raw.lower()
         for prefix in ("what is", "define", "explain", "tell me about", "overview of", "describe"):
@@ -217,8 +234,12 @@ class QAPipeline:
     # -------------------- credibility mode --------------------
 
     def _is_credibility_check(self, q: str) -> bool:
-        q_strip = (q or "").strip()
-        return q_strip.lower().startswith("credibility_check:") or q_strip.lower().startswith("check credibility:") or q_strip.lower().startswith("[credibility check]")
+        q_strip = (q or "").strip().lower()
+        return (
+            q_strip.startswith("credibility_check:")
+            or q_strip.startswith("check credibility:")
+            or q_strip.startswith("[credibility check]")
+        )
 
     def _extract_claim(self, q: str) -> str:
         s = (q or "").strip()
@@ -231,36 +252,108 @@ class QAPipeline:
             return s[len("[credibility check]"):].strip()
         return s
 
-    # -------------------- level filter --------------------
+    # -------------------- NEW: level filter parsing --------------------
 
     def _parse_level_filter(self, q: str) -> Optional[List[int]]:
+        """
+        Supports:
+        - "level 1 only", "levels 1-3", "level 1 and 2"
+        - "guidelines only" -> level 1
+        - "systematic review only" -> level 2
+        - comparators: >=, <=, >, < (e.g., ">= level 3")
+        - natural language: "greater than level 5", "above level 4"
+          IMPORTANT: "above/higher/greater" is interpreted as *higher evidence quality* => levels 1..N
+          (this matches your request: "greater than level 5" -> return level 1 papers)
+        """
         qn = _norm(q)
-        if "level" not in qn and "levels" not in qn:
+        if not qn:
             return None
 
+        levels_found = set()
+
+        # A) Keyword synonyms (guidelines, meta-analysis, RCT...)
+        for lvl, kws in LEVEL_SYNONYMS.items():
+            for kw in kws:
+                if kw in qn:
+                    levels_found.add(lvl)
+
+        # B) Numeric ranges: levels 1-3
         m_range = re.search(r"\blevels?\s*([1-7])\s*-\s*([1-7])\b", qn)
         if m_range:
             a, b = int(m_range.group(1)), int(m_range.group(2))
             lo, hi = min(a, b), max(a, b)
             return list(range(lo, hi + 1))
 
-        nums = re.findall(r"\blevels?\s*[:\-]?\s*([1-7])\b", qn)
-        levels = sorted({int(n) for n in nums}) if nums else []
+        # C) Explicit multi: "level 1 and 2" / "level 1,2"
+        for n in re.findall(r"\blevel\s*([1-7])\b", qn):
+            levels_found.add(int(n))
 
-        if not levels:
-            m_from = re.search(r"\bfrom\s+level\s+([1-7])\b", qn)
-            if m_from:
-                levels = [int(m_from.group(1))]
+        # D) Symbol comparators: <= level 3, > level 5, etc.
+        m_comp = re.search(r"(?:(<=|>=|<|>)\s*)level\s*([1-7])\b", qn)
+        if m_comp:
+            op, n = m_comp.group(1), int(m_comp.group(2))
+            if op == "<=":
+                return list(range(1, n + 1))
+            if op == "<":
+                return list(range(1, n))
+            if op == ">=":
+                return list(range(n, 8))
+            if op == ">":
+                return list(range(n + 1, 8))
 
-        return levels or None
+        # E) Natural language comparators:
+        # "greater than level 5", "above level 5", "higher than level 5"
+        m_nl = re.search(
+            r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?level\s*([1-7])\b",
+            qn
+        )
+        # also accept "greater than 5" without "level"
+        if not m_nl:
+            m_nl = re.search(
+                r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?([1-7])\b",
+                qn
+            )
+
+        if m_nl:
+            word = m_nl.group(1)
+            n = int(m_nl.group(2))
+
+            # Interpret "higher/above/greater" as higher evidence (closer to level 1)
+            if word in HIERARCHY_HIGH_WORDS:
+                return list(range(1, n + 1))
+
+            # Interpret "lower/below/weaker" as lower evidence (towards level 7)
+            if word in HIERARCHY_LOW_WORDS:
+                return list(range(n, 8))
+
+        return sorted(levels_found) if levels_found else None
 
     def _strip_level_filter_text(self, q: str) -> str:
         s = q or ""
+
+        # Remove synonym forms like "guidelines only", "meta-analysis only", etc.
+        s = re.sub(r"\bfrom\s+(guidelines?|consensus)\s+only\b", "", s, flags=re.I)
+        s = re.sub(r"\bguidelines?\s+only\b", "", s, flags=re.I)
+        s = re.sub(
+            r"\b(systematic review|meta[\s\-]?analysis|rcts?|randomi[sz]ed|clinical trials?|cohort|case[\s\-]?control|case reports?|case series)\s+only\b",
+            "",
+            s,
+            flags=re.I,
+        )
+
+        # Remove numeric level expressions
         s = re.sub(r"\bonly\s+from\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\bfrom\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\blevels?\s*[1-7](\s*-\s*[1-7])?\s*only\b", "", s, flags=re.I)
         s = re.sub(r"\blevels?\s*[1-7](\s*(and|,)\s*[1-7])+\b", "", s, flags=re.I)
         s = re.sub(r"\blevel\s*[1-7]\b", "", s, flags=re.I)
+
+        # Remove comparator forms
+        s = re.sub(r"(<=|>=|<|>)\s*level\s*[1-7]\b", "", s, flags=re.I)
+        s = re.sub(r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?level\s*[1-7]\b", "", s, flags=re.I)
+        s = re.sub(r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?[1-7]\b", "", s, flags=re.I)
+
+        # Cleanup extra spaces
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
@@ -270,7 +363,7 @@ class QAPipeline:
         try:
             if x is None or isinstance(x, bool):
                 return None
-            return int(x)
+            return int(float(x))
         except Exception:
             return None
 
@@ -457,7 +550,6 @@ class QAPipeline:
     # -------------------- prompts --------------------
 
     def _prompt_normal(self, question: str, context: str, mode: str) -> str:
-        # Short mode: no summary, no quotes (fast + short)
         if mode == "short":
             output_format = """A) Definition
 - 1–2 bullets, each ending with (Title, Year).
@@ -498,7 +590,6 @@ Context (excerpts):
 """.strip()
 
     def _prompt_credibility(self, claim: str, context: str) -> str:
-        # LLM does the splitting + classification, but must be grounded in excerpts
         return f"""
 {self.instruction_text}
 
@@ -536,7 +627,6 @@ Context (excerpts):
 
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 5) -> str:
         try:
-            # Meta questions
             if self._is_meta_question(question):
                 return (
                     "I’m the assistant inside **Thyroid Cancer RAG Assistant**.\n\n"
@@ -546,20 +636,20 @@ Context (excerpts):
                     "staging, surgery, radioiodine (RAI), follow-up, recurrence, and prognosis."
                 )
 
-            # Level filter parsing
+            # Parse filter first, then strip filter words for retrieval text
             requested_levels = self._parse_level_filter(question)
             q_clean = self._strip_level_filter_text(question)
 
             # Credibility check routing (explicit only)
             if self._is_credibility_check(q_clean):
                 claim = self._extract_claim(q_clean)
+
                 if not self._is_in_scope(claim):
                     return (
                         "I’m scoped to **thyroid cancer** only, so I can only verify claims related to thyroid cancer.\n\n"
                         "Please paste a thyroid-cancer-related claim."
                     )
 
-                # Retrieval for claim (add thyroid cancer keyword to help recall)
                 retrieval_query = f"{claim} thyroid cancer"
                 k_use = max(k, 12)
                 retrieved = self.vector_store.search(retrieval_query, k=k_use, levels=requested_levels)
@@ -576,7 +666,6 @@ Context (excerpts):
                 if draft.startswith("⚠️"):
                     return draft
 
-                # Add confidence rating under credibility check header
                 if "Credibility check" in draft:
                     draft = draft.replace("Credibility check", f"Credibility check\n\n{conf_block}", 1)
                 else:
@@ -609,8 +698,6 @@ Context (excerpts):
                     retrieval_query = f"definition of {term}"
 
             k_use = max(k, 8) if mode == "short" else max(k, 12)
-            if requested_levels == [1]:
-                k_use = min(k_use, 6)
 
             retrieved = self.vector_store.search(retrieval_query, k=k_use, levels=requested_levels)
 
