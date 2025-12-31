@@ -85,6 +85,8 @@ class QdrantVectorStore:
                     "evidence_level": payload.get("evidence_level", payload.get("Evidence_Level", None)),
                     "score": getattr(hit, "score", None),
                 })
+                hits = vector_store.search("thyroid cancer", k=20, levels=[1])
+                print(len(hits), [h.get("evidence_level") for h in hits[:10]])
             return results
 
         except Exception as e:
