@@ -98,5 +98,5 @@ class QdrantVectorStore:
             return results
 
         except Exception as e:
-            logger.exception(f"Error during vector search: {e}")
+            logger.exception("Error during vector search: %s", e)
             return []
