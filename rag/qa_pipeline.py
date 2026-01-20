@@ -1,6 +1,7 @@
 # rag/qa_pipeline.py
 import os
 import re
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -54,6 +55,7 @@ EVIDENCE_PHRASES = [
 SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
 LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
 
+# NOTE: kept for heuristic fallback only (if LLM scope judge fails)
 SCOPE_ANCHORS = [
     "thyroid",
     "thyroid cancer",
@@ -137,6 +139,9 @@ class QAPipeline:
         self.agent_instructions = self._load_instruction(agent_path)
         self.instruction_text = self._combine_instructions()
 
+        # Optional: simple in-memory cache for scope decisions (reduces repeated LLM calls)
+        self._scope_cache: Dict[str, Tuple[bool, float, str]] = {}
+
     # -------------------- instruction loading --------------------
 
     def _load_instruction(self, file_path: Path) -> str:
@@ -214,9 +219,93 @@ class QAPipeline:
             return "short"
         return "standard"
 
-    # -------------------- scope check --------------------
+    # -------------------- scope check (LLM-based) --------------------
 
-    def _is_in_scope(self, q: str) -> bool:
+    def _extract_json_object(self, s: str) -> Optional[str]:
+        """
+        Best-effort extraction of the first JSON object in a string.
+        """
+        if not s:
+            return None
+        s = s.strip()
+        # If the whole thing is already JSON
+        if s.startswith("{") and s.endswith("}"):
+            return s
+        # Try to find the first {...}
+        m = re.search(r"\{.*\}", s, flags=re.S)
+        return m.group(0) if m else None
+
+    def _llm_scope_judge(self, q: str) -> Tuple[Optional[bool], float, str]:
+        """
+        Ask the LLM to judge if the user question is in-scope for thyroid cancer.
+
+        Returns: (in_scope or None on failure, confidence 0..1, rationale)
+        """
+        q_clean = (q or "").strip()
+        if not q_clean:
+            return None, 0.0, "Empty question."
+
+        qn = _norm(q_clean)
+        if qn in self._scope_cache:
+            ok, conf, rat = self._scope_cache[qn]
+            return ok, conf, rat
+
+        prompt = f"""
+You are a routing classifier for an app called "Thyroid Cancer RAG Assistant".
+
+Goal:
+Decide whether the user's question is IN SCOPE.
+
+IN SCOPE includes:
+- Thyroid cancer (PTC/FTC/MTC/ATC), suspected thyroid cancer, thyroid carcinoma
+- Thyroid nodules when discussed in the context of cancer risk/workup (ultrasound features, TI-RADS, FNA/biopsy, molecular markers, staging, surgery, radioiodine, recurrence, prognosis, surveillance)
+- Genes/mutations relevant to thyroid cancer (e.g., BRAF, RET) in thyroid cancer context
+
+OUT OF SCOPE includes:
+- Non-cancer thyroid diseases when not related to cancer workup (e.g., hypothyroidism, hyperthyroidism, Hashimoto's) unless clearly about nodule/cancer evaluation
+- Unrelated cancers or non-thyroid medical topics
+- General chit-chat unrelated to thyroid cancer
+
+Return ONLY a JSON object with these keys:
+- "in_scope": true/false
+- "confidence": number between 0 and 1
+- "rationale": short string (<= 20 words)
+
+User question:
+{q_clean}
+""".strip()
+
+        try:
+            raw = (self.llm.ask(prompt) or "").strip()
+            js = self._extract_json_object(raw)
+            if not js:
+                return None, 0.0, "LLM did not return JSON."
+
+            data = json.loads(js)
+            in_scope = data.get("in_scope", None)
+            conf = data.get("confidence", 0.0)
+            rat = data.get("rationale", "") or ""
+
+            if not isinstance(in_scope, bool):
+                return None, 0.0, "LLM JSON missing boolean in_scope."
+            try:
+                conf_f = float(conf)
+            except Exception:
+                conf_f = 0.0
+
+            conf_f = max(0.0, min(1.0, conf_f))
+            rat = str(rat)[:200]
+
+            self._scope_cache[qn] = (in_scope, conf_f, rat)
+            return in_scope, conf_f, rat
+        except Exception as e:
+            logging.warning(f"LLM scope judge failed: {e}")
+            return None, 0.0, "LLM scope judge error."
+
+    def _heuristic_in_scope(self, q: str) -> bool:
+        """
+        Previous hardcoded heuristic (kept only as fallback if the LLM fails).
+        """
         qn = _norm(q)
         if not qn:
             return False
@@ -230,6 +319,20 @@ class QAPipeline:
 
         match = process.extractOne(qn, self._scope_anchors_norm, scorer=fuzz.token_set_ratio)
         return bool(match and match[1] >= 75)
+
+    def _is_in_scope(self, q: str) -> bool:
+        """
+        Main scope checker: uses LLM first; if it fails, falls back to heuristic.
+        """
+        in_scope, conf, _rat = self._llm_scope_judge(q)
+        if in_scope is None:
+            return self._heuristic_in_scope(q)
+
+        # If you want to be conservative at low confidence, uncomment:
+        # if conf < 0.55:
+        #     return self._heuristic_in_scope(q)
+
+        return bool(in_scope)
 
     # -------------------- credibility mode --------------------
 
@@ -302,12 +405,10 @@ class QAPipeline:
                 return list(range(n + 1, 8))
 
         # E) Natural language comparators:
-        # "greater than level 5", "above level 5", "higher than level 5"
         m_nl = re.search(
             r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?level\s*([1-7])\b",
             qn
         )
-        # also accept "greater than 5" without "level"
         if not m_nl:
             m_nl = re.search(
                 r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?([1-7])\b",
@@ -318,11 +419,9 @@ class QAPipeline:
             word = m_nl.group(1)
             n = int(m_nl.group(2))
 
-            # Interpret "higher/above/greater" as higher evidence (closer to level 1)
             if word in HIERARCHY_HIGH_WORDS:
                 return list(range(1, n + 1))
 
-            # Interpret "lower/below/weaker" as lower evidence (towards level 7)
             if word in HIERARCHY_LOW_WORDS:
                 return list(range(n, 8))
 
@@ -331,7 +430,6 @@ class QAPipeline:
     def _strip_level_filter_text(self, q: str) -> str:
         s = q or ""
 
-        # Remove synonym forms like "guidelines only", "meta-analysis only", etc.
         s = re.sub(r"\bfrom\s+(guidelines?|consensus)\s+only\b", "", s, flags=re.I)
         s = re.sub(r"\bguidelines?\s+only\b", "", s, flags=re.I)
         s = re.sub(
@@ -341,19 +439,16 @@ class QAPipeline:
             flags=re.I,
         )
 
-        # Remove numeric level expressions
         s = re.sub(r"\bonly\s+from\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\bfrom\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\blevels?\s*[1-7](\s*-\s*[1-7])?\s*only\b", "", s, flags=re.I)
         s = re.sub(r"\blevels?\s*[1-7](\s*(and|,)\s*[1-7])+\b", "", s, flags=re.I)
         s = re.sub(r"\blevel\s*[1-7]\b", "", s, flags=re.I)
 
-        # Remove comparator forms
         s = re.sub(r"(<=|>=|<|>)\s*level\s*[1-7]\b", "", s, flags=re.I)
         s = re.sub(r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?level\s*[1-7]\b", "", s, flags=re.I)
         s = re.sub(r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?[1-7]\b", "", s, flags=re.I)
 
-        # Cleanup extra spaces
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
@@ -644,6 +739,7 @@ Context (excerpts):
             if self._is_credibility_check(q_clean):
                 claim = self._extract_claim(q_clean)
 
+                # LLM-based scope judgement
                 if not self._is_in_scope(claim):
                     return (
                         "I’m scoped to **thyroid cancer** only, so I can only verify claims related to thyroid cancer.\n\n"
@@ -673,7 +769,7 @@ Context (excerpts):
 
                 return draft.strip()
 
-            # Scope gate for normal Q&A
+            # Scope gate for normal Q&A (LLM-based)
             if not self._is_in_scope(q_clean):
                 return (
                     "I’m scoped to **thyroid cancer** questions only.\n\n"
