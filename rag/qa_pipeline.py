@@ -10,17 +10,7 @@ from rapidfuzz import fuzz, process
 
 logging.basicConfig(level=logging.INFO)
 
-META_PHRASES = [
-    "tell me about yourself",
-    "who are you",
-    "what are you",
-    "what is this",
-    "what is this ai",
-    "what is this app",
-    "how does this work",
-    "what can you do",
-    "help",
-]
+# NOTE: meta phrases removed (LLM routes assistant-vs-medical intent now)
 
 PAPER_PHRASES = [
     "give me the paper",
@@ -55,7 +45,7 @@ EVIDENCE_PHRASES = [
 SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
 LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
 
-# NOTE: kept for heuristic fallback only (if LLM scope judge fails)
+# Kept ONLY as heuristic fallback if LLM scope judge fails
 SCOPE_ANCHORS = [
     "thyroid",
     "thyroid cancer",
@@ -94,7 +84,6 @@ LEVEL_SYNONYMS: Dict[int, List[str]] = {
     7: ["case report", "case reports", "case series", "series", "personal narrative"],
 }
 
-# words users use for evidence hierarchy comparisons
 HIERARCHY_HIGH_WORDS = ["higher", "above", "better", "stronger", "top", "best", "greater"]
 HIERARCHY_LOW_WORDS = ["lower", "below", "worse", "weaker", "less"]
 
@@ -139,8 +128,9 @@ class QAPipeline:
         self.agent_instructions = self._load_instruction(agent_path)
         self.instruction_text = self._combine_instructions()
 
-        # Optional: simple in-memory cache for scope decisions (reduces repeated LLM calls)
+        # simple in-memory caches
         self._scope_cache: Dict[str, Tuple[bool, float, str]] = {}
+        self._intent_cache: Dict[str, Tuple[str, float, str]] = {}
 
     # -------------------- instruction loading --------------------
 
@@ -163,10 +153,6 @@ class QAPipeline:
         return "\n\n".join(parts).strip()
 
     # -------------------- routing helpers --------------------
-
-    def _is_meta_question(self, q: str) -> bool:
-        qn = _norm(q)
-        return any(p in qn for p in META_PHRASES)
 
     def _is_paper_request(self, q: str) -> bool:
         qn = _norm(q)
@@ -219,27 +205,103 @@ class QAPipeline:
             return "short"
         return "standard"
 
-    # -------------------- scope check (LLM-based) --------------------
+    # -------------------- JSON extraction helper --------------------
 
     def _extract_json_object(self, s: str) -> Optional[str]:
-        """
-        Best-effort extraction of the first JSON object in a string.
-        """
         if not s:
             return None
         s = s.strip()
-        # If the whole thing is already JSON
         if s.startswith("{") and s.endswith("}"):
             return s
-        # Try to find the first {...}
         m = re.search(r"\{.*\}", s, flags=re.S)
         return m.group(0) if m else None
 
+    # -------------------- NEW: LLM intent router (assistant vs medical) --------------------
+
+    def _llm_intent_router(self, q: str) -> Tuple[Optional[str], float, str]:
+        """
+        Classify into:
+        - "assistant": about the chatbot/app itself
+        - "medical": about thyroid cancer / thyroid cancer workup/treatment etc.
+        - "other": unrelated to both
+        """
+        q_clean = (q or "").strip()
+        if not q_clean:
+            return None, 0.0, "Empty question."
+
+        qn = _norm(q_clean)
+        if qn in self._intent_cache:
+            label, conf, rat = self._intent_cache[qn]
+            return label, conf, rat
+
+        prompt = f"""
+You are an intent router for an app called "Thyroid Cancer RAG Assistant".
+
+Classify the user's message into EXACTLY ONE label:
+- "assistant": the user is asking about the chatbot/app itself (who are you, what can you do, how it works, help using it)
+- "medical": the user is asking about thyroid cancer, suspected thyroid cancer, thyroid nodules in cancer evaluation, diagnosis, treatment, prognosis
+- "other": not about the assistant and not about thyroid cancer
+
+Important:
+- If the user says "what is this cancer" or mentions cancer, choose "medical" (not "assistant").
+- Only choose "assistant" if the message is clearly about the chatbot/app.
+
+Return ONLY JSON:
+{{
+  "label": "assistant" | "medical" | "other",
+  "confidence": 0 to 1,
+  "rationale": "<= 20 words"
+}}
+
+User message:
+{q_clean}
+""".strip()
+
+        try:
+            raw = (self.llm.ask(prompt) or "").strip()
+            js = self._extract_json_object(raw)
+            if not js:
+                return None, 0.0, "LLM did not return JSON."
+            data = json.loads(js)
+
+            label = data.get("label")
+            conf = data.get("confidence", 0.0)
+            rat = data.get("rationale", "") or ""
+
+            if label not in ("assistant", "medical", "other"):
+                return None, 0.0, "Invalid label."
+
+            try:
+                conf_f = float(conf)
+            except Exception:
+                conf_f = 0.0
+            conf_f = max(0.0, min(1.0, conf_f))
+            rat = str(rat)[:200]
+
+            self._intent_cache[qn] = (label, conf_f, rat)
+            return label, conf_f, rat
+        except Exception as e:
+            logging.warning(f"LLM intent router failed: {e}")
+            return None, 0.0, "LLM intent router error."
+
+    def _is_assistant_question(self, q: str) -> bool:
+        """
+        Show meta "I’m the assistant..." only when LLM says it's about the assistant.
+        Conservative: only True when label == 'assistant'.
+        """
+        label, _conf, _rat = self._llm_intent_router(q)
+        if label is None:
+            # minimal fallback (not a big hardcoded list)
+            qn = _norm(q)
+            return any(x in qn for x in ["who are you", "what can you do", "how does this work", "help"])
+        return label == "assistant"
+
+    # -------------------- scope check (LLM-based) --------------------
+
     def _llm_scope_judge(self, q: str) -> Tuple[Optional[bool], float, str]:
         """
-        Ask the LLM to judge if the user question is in-scope for thyroid cancer.
-
-        Returns: (in_scope or None on failure, confidence 0..1, rationale)
+        Decide whether the question is in scope for thyroid cancer.
+        Returns (in_scope or None on failure, confidence 0..1, rationale).
         """
         q_clean = (q or "").strip()
         if not q_clean:
@@ -251,14 +313,14 @@ class QAPipeline:
             return ok, conf, rat
 
         prompt = f"""
-You are a routing classifier for an app called "Thyroid Cancer RAG Assistant".
+You are a scope classifier for "Thyroid Cancer RAG Assistant".
 
 Goal:
-Decide whether the user's question is IN SCOPE.
+Decide whether the user's question is IN SCOPE for thyroid cancer.
 
 IN SCOPE includes:
 - Thyroid cancer (PTC/FTC/MTC/ATC), suspected thyroid cancer, thyroid carcinoma
-- Thyroid nodules when discussed in the context of cancer risk/workup (ultrasound features, TI-RADS, FNA/biopsy, molecular markers, staging, surgery, radioiodine, recurrence, prognosis, surveillance)
+- Thyroid nodules when discussed in cancer risk/workup (ultrasound features, TI-RADS, FNA/biopsy, molecular markers, staging, surgery, radioiodine, recurrence, prognosis, surveillance)
 - Genes/mutations relevant to thyroid cancer (e.g., BRAF, RET) in thyroid cancer context
 
 OUT OF SCOPE includes:
@@ -266,10 +328,12 @@ OUT OF SCOPE includes:
 - Unrelated cancers or non-thyroid medical topics
 - General chit-chat unrelated to thyroid cancer
 
-Return ONLY a JSON object with these keys:
-- "in_scope": true/false
-- "confidence": number between 0 and 1
-- "rationale": short string (<= 20 words)
+Return ONLY JSON:
+{{
+  "in_scope": true/false,
+  "confidence": 0 to 1,
+  "rationale": "<= 20 words"
+}}
 
 User question:
 {q_clean}
@@ -280,19 +344,19 @@ User question:
             js = self._extract_json_object(raw)
             if not js:
                 return None, 0.0, "LLM did not return JSON."
-
             data = json.loads(js)
+
             in_scope = data.get("in_scope", None)
             conf = data.get("confidence", 0.0)
             rat = data.get("rationale", "") or ""
 
             if not isinstance(in_scope, bool):
                 return None, 0.0, "LLM JSON missing boolean in_scope."
+
             try:
                 conf_f = float(conf)
             except Exception:
                 conf_f = 0.0
-
             conf_f = max(0.0, min(1.0, conf_f))
             rat = str(rat)[:200]
 
@@ -304,7 +368,7 @@ User question:
 
     def _heuristic_in_scope(self, q: str) -> bool:
         """
-        Previous hardcoded heuristic (kept only as fallback if the LLM fails).
+        Previous fuzzy/anchor logic. Used only if LLM scope judge fails.
         """
         qn = _norm(q)
         if not qn:
@@ -322,16 +386,11 @@ User question:
 
     def _is_in_scope(self, q: str) -> bool:
         """
-        Main scope checker: uses LLM first; if it fails, falls back to heuristic.
+        LLM-first scope checker with heuristic fallback.
         """
-        in_scope, conf, _rat = self._llm_scope_judge(q)
+        in_scope, _conf, _rat = self._llm_scope_judge(q)
         if in_scope is None:
             return self._heuristic_in_scope(q)
-
-        # If you want to be conservative at low confidence, uncomment:
-        # if conf < 0.55:
-        #     return self._heuristic_in_scope(q)
-
         return bool(in_scope)
 
     # -------------------- credibility mode --------------------
@@ -355,18 +414,16 @@ User question:
             return s[len("[credibility check]"):].strip()
         return s
 
-    # -------------------- NEW: level filter parsing --------------------
+    # -------------------- level filter parsing --------------------
 
     def _parse_level_filter(self, q: str) -> Optional[List[int]]:
         """
         Supports:
         - "level 1 only", "levels 1-3", "level 1 and 2"
         - "guidelines only" -> level 1
-        - "systematic review only" -> level 2
         - comparators: >=, <=, >, < (e.g., ">= level 3")
         - natural language: "greater than level 5", "above level 4"
-          IMPORTANT: "above/higher/greater" is interpreted as *higher evidence quality* => levels 1..N
-          (this matches your request: "greater than level 5" -> return level 1 papers)
+          "greater/above/higher" interpreted as higher evidence quality => levels 1..N
         """
         qn = _norm(q)
         if not qn:
@@ -374,7 +431,7 @@ User question:
 
         levels_found = set()
 
-        # A) Keyword synonyms (guidelines, meta-analysis, RCT...)
+        # A) Keyword synonyms
         for lvl, kws in LEVEL_SYNONYMS.items():
             for kw in kws:
                 if kw in qn:
@@ -404,7 +461,7 @@ User question:
             if op == ">":
                 return list(range(n + 1, 8))
 
-        # E) Natural language comparators:
+        # E) Natural language comparators
         m_nl = re.search(
             r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?level\s*([1-7])\b",
             qn
@@ -418,10 +475,8 @@ User question:
         if m_nl:
             word = m_nl.group(1)
             n = int(m_nl.group(2))
-
             if word in HIERARCHY_HIGH_WORDS:
                 return list(range(1, n + 1))
-
             if word in HIERARCHY_LOW_WORDS:
                 return list(range(n, 8))
 
@@ -430,6 +485,7 @@ User question:
     def _strip_level_filter_text(self, q: str) -> str:
         s = q or ""
 
+        # Remove synonym forms like "guidelines only", "meta-analysis only", etc.
         s = re.sub(r"\bfrom\s+(guidelines?|consensus)\s+only\b", "", s, flags=re.I)
         s = re.sub(r"\bguidelines?\s+only\b", "", s, flags=re.I)
         s = re.sub(
@@ -439,15 +495,27 @@ User question:
             flags=re.I,
         )
 
+        # Remove numeric level expressions
         s = re.sub(r"\bonly\s+from\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\bfrom\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\blevels?\s*[1-7](\s*-\s*[1-7])?\s*only\b", "", s, flags=re.I)
         s = re.sub(r"\blevels?\s*[1-7](\s*(and|,)\s*[1-7])+\b", "", s, flags=re.I)
         s = re.sub(r"\blevel\s*[1-7]\b", "", s, flags=re.I)
 
+        # Remove comparator forms
         s = re.sub(r"(<=|>=|<|>)\s*level\s*[1-7]\b", "", s, flags=re.I)
-        s = re.sub(r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?level\s*[1-7]\b", "", s, flags=re.I)
-        s = re.sub(r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?[1-7]\b", "", s, flags=re.I)
+        s = re.sub(
+            r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?level\s*[1-7]\b",
+            "",
+            s,
+            flags=re.I
+        )
+        s = re.sub(
+            r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?[1-7]\b",
+            "",
+            s,
+            flags=re.I
+        )
 
         s = re.sub(r"\s+", " ", s).strip()
         return s
@@ -722,7 +790,8 @@ Context (excerpts):
 
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 5) -> str:
         try:
-            if self._is_meta_question(question):
+            # LLM-based meta routing (assistant vs medical)
+            if self._is_assistant_question(question):
                 return (
                     "I’m the assistant inside **Thyroid Cancer RAG Assistant**.\n\n"
                     "- I answer **thyroid cancer** questions by retrieving relevant excerpts from your indexed dataset (Qdrant).\n"
@@ -739,7 +808,6 @@ Context (excerpts):
             if self._is_credibility_check(q_clean):
                 claim = self._extract_claim(q_clean)
 
-                # LLM-based scope judgement
                 if not self._is_in_scope(claim):
                     return (
                         "I’m scoped to **thyroid cancer** only, so I can only verify claims related to thyroid cancer.\n\n"
