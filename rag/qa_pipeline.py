@@ -409,7 +409,7 @@ User question:
             if op == ">":
                 return list(range(n + 1, 8))
 
-        # E) natural language comparators (FIXED: we pass qn to re.search)
+        # E) natural language comparators
         m_nl = re.search(
             r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?level\s*([1-7])\b",
             qn
@@ -693,95 +693,44 @@ Context (excerpts):
 {context}
 """.strip()
 
-    # -------------------- STRICT credibility prompt + repair pass --------------------
+    # -------------------- NEW credibility: semantic match (no strict quote rules) --------------------
 
     def _prompt_credibility(self, claim: str, context: str) -> str:
         return f"""
 {self.instruction_text}
 
 Task:
-You are performing a credibility check for a third-party claim using ONLY the retrieved excerpts.
+Evaluate the credibility of the CLAIM using ONLY the retrieved excerpts.
+This is a semantic check (meaning-based), NOT a word-for-word match.
 
-Hard rules (must follow):
-- Use ONLY the excerpts below. No outside medical knowledge.
-- Break the claim into atomic statements.
-- For each statement, classify as:
-  Supported / Contradicted / Not found in sources
-- If you mark a statement Supported or Contradicted:
-  - You MUST include at least one direct quote (<= 35 words) from the excerpts
-  - The quote MUST be listed in the Evidence section
-  - And you MUST cite it inline using (Title, Year) in the justification bullet
-- If you mark a statement Not found in sources:
-  - Do NOT add any extra information or inferences.
-  - ONLY say that the sources do not mention it / do not address it.
-
-Overall assessment rules:
-- If ALL statements are Not found in sources -> Overall assessment MUST be: Not enough evidence in the retrieved sources
-- If any statement is Contradicted and none Supported -> Overall assessment: Not supported
-- If mix of Supported/Not found/Contradicted -> Overall assessment: Partially supported
-- If all statements Supported -> Overall assessment: Supported
+Rules:
+- Use ONLY the excerpts below. Do not use outside medical knowledge.
+- Break the claim into 1–3 atomic statements.
+- For each statement, decide one label:
+  Supported = excerpts clearly imply the statement (even if paraphrased)
+  Contradicted = excerpts clearly imply the opposite
+  Unclear = excerpts are missing, too vague, or mixed
+- Provide a short justification for each statement.
+- Cite sources as (Title, Year).
+- Quotes are OPTIONAL. Use at most 2 short quotes total, only if they strongly help.
 
 OUTPUT FORMAT (follow exactly):
 Credibility check
-- Overall assessment: <Supported / Partially supported / Not supported / Not enough evidence in the retrieved sources>
-- Supported (from sources):
-  - <statement>: <why> (Title, Year)
-- Contradicted (by sources):
-  - <statement>: <why> (Title, Year)
-- Not found in sources:
-  - <statement>
+- Overall assessment: <Supported / Partially supported / Not supported / Unclear>
+- Statement results:
+  1) <statement> — <Supported/Contradicted/Unclear>
+     - Why: ...
+     - Sources: (Title, Year), (Title, Year)
+  2) ...
 
-Evidence
-- Up to 4 short quotes (<= 35 words), each as:
-  "<quote>" (Title, Year, PMID: <PMID>)
-
-Claim to verify:
-{claim}
-
-Context (excerpts):
-{context}
-""".strip()
-
-    def _needs_credibility_repair(self, text: str) -> bool:
-        if not text:
-            return True
-
-        # supported/contradicted bullets without quotes
-        has_supported_bullets = bool(re.search(r"supported \(from sources\):\s*\n\s*-\s*(?!none)", text, flags=re.I))
-        has_contra_bullets = bool(re.search(r"contradicted \(by sources\):\s*\n\s*-\s*(?!none)", text, flags=re.I))
-        has_quote = bool(re.search(r"\".{5,}\"", text))
-
-        if (has_supported_bullets or has_contra_bullets) and not has_quote:
-            return True
-
-        # Not found section should not contain inference-y verbs
-        m_nf = re.search(r"not found in sources:\s*(.*?)(\n\s*evidence|\Z)", text, flags=re.I | re.S)
-        if m_nf:
-            nf_block = m_nf.group(1).lower()
-            forbidden = ["indicate", "suggest", "shows", "showed", "demonstrate", "demonstrates", "supports", "contradicts"]
-            if any(w in nf_block for w in forbidden):
-                return True
-
-        return False
-
-    def _prompt_credibility_repair(self, bad_answer: str, claim: str, context: str) -> str:
-        return f"""
-Rewrite the credibility-check answer to fully comply with the rules.
-
-Fixes required:
-- Do not add any factual claims under "Not found in sources".
-- Any Supported or Contradicted statement MUST be backed by a direct quote in Evidence.
-
-Use ONLY the excerpts. Keep the exact required format.
+Optional evidence
+- "<short quote>" (Title, Year, PMID: <PMID>)
 
 Claim:
 {claim}
 
 Context (excerpts):
 {context}
-
-Bad answer to fix:
-{bad_answer}
 """.strip()
 
     # -------------------- answer --------------------
@@ -803,7 +752,7 @@ Bad answer to fix:
             requested_levels = self._parse_level_filter(question)
             q_clean = self._strip_level_filter_text(question)
 
-            # Credibility check: accept ANY claim
+            # Credibility check: accept ANY claim + semantic comparison
             if self._is_credibility_check(q_clean):
                 claim = self._extract_claim(q_clean)
 
@@ -822,24 +771,6 @@ Bad answer to fix:
                 draft = (self.llm.ask(self._prompt_credibility(claim, context)) or "").strip()
                 if draft.startswith("⚠️"):
                     return draft
-
-                if self._needs_credibility_repair(draft):
-                    draft2 = (self.llm.ask(self._prompt_credibility_repair(draft, claim, context)) or "").strip()
-                    if draft2 and not self._needs_credibility_repair(draft2):
-                        draft = draft2
-                    else:
-                        draft = (
-                            "Credibility check\n"
-                            "- Overall assessment: Not enough evidence in the retrieved sources\n"
-                            "- Supported (from sources):\n"
-                            "  - None\n"
-                            "- Contradicted (by sources):\n"
-                            "  - None\n"
-                            "- Not found in sources:\n"
-                            f"  - {claim}\n\n"
-                            "Evidence\n"
-                            "- Not provided, as no excerpt supports or contradicts the claim."
-                        )
 
                 if "Credibility check" in draft:
                     draft = draft.replace("Credibility check", f"Credibility check\n\n{conf_block}", 1)
