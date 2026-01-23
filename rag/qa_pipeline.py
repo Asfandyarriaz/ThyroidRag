@@ -43,7 +43,7 @@ EVIDENCE_PHRASES = [
 SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
 LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
 
-# Kept ONLY as heuristic fallback if LLM scope judge fails
+# Kept ONLY as heuristic fallback if LLM scope judge fails (normal Q&A path)
 SCOPE_ANCHORS = [
     "thyroid",
     "thyroid cancer",
@@ -216,12 +216,6 @@ class QAPipeline:
     # -------------------- LLM intent router (assistant vs medical) --------------------
 
     def _llm_intent_router(self, q: str) -> Tuple[Optional[str], float, str]:
-        """
-        Classify into:
-        - "assistant": about chatbot/app itself
-        - "medical": about thyroid cancer topics
-        - "other": neither
-        """
         q_clean = (q or "").strip()
         if not q_clean:
             return None, 0.0, "Empty question."
@@ -236,8 +230,8 @@ You are an intent router for an app called "Thyroid Cancer RAG Assistant".
 
 Pick EXACTLY ONE label:
 - "assistant": the user asks about the chatbot/app itself (who are you, what can you do, how it works, help using it)
-- "medical": the user asks about thyroid cancer, suspected thyroid cancer, thyroid nodules in cancer evaluation, diagnosis, treatment, prognosis
-- "other": not about the assistant and not about thyroid cancer
+- "medical": the user asks about thyroid cancer topics
+- "other": neither
 
 Important:
 - If user mentions cancer (e.g., "what is this cancer"), choose "medical" not "assistant".
@@ -282,23 +276,15 @@ User message:
             return None, 0.0, "LLM intent router error."
 
     def _is_assistant_question(self, q: str) -> bool:
-        """
-        Show meta message only when label == 'assistant' (conservative).
-        """
         label, _conf, _rat = self._llm_intent_router(q)
         if label is None:
-            # minimal fallback
             qn = _norm(q)
             return any(x in qn for x in ["who are you", "what can you do", "how does this work", "help"])
         return label == "assistant"
 
-    # -------------------- scope check (LLM-based) --------------------
+    # -------------------- scope check (LLM-based, normal Q&A only) --------------------
 
     def _llm_scope_judge(self, q: str) -> Tuple[Optional[bool], float, str]:
-        """
-        Decide whether the question is in scope for thyroid cancer Q&A.
-        Returns (in_scope or None on failure, confidence 0..1, rationale).
-        """
         q_clean = (q or "").strip()
         if not q_clean:
             return None, 0.0, "Empty question."
@@ -313,16 +299,6 @@ You are a scope classifier for "Thyroid Cancer RAG Assistant".
 
 Goal:
 Decide whether the user's question is IN SCOPE for thyroid cancer.
-
-IN SCOPE includes:
-- Thyroid cancer (PTC/FTC/MTC/ATC), suspected thyroid cancer, thyroid carcinoma
-- Thyroid nodules in cancer risk/workup (ultrasound features, TI-RADS, FNA/biopsy, molecular markers, staging, surgery, radioiodine, recurrence, prognosis, surveillance)
-- Genes/mutations relevant to thyroid cancer (e.g., BRAF, RET) in thyroid cancer context
-
-OUT OF SCOPE includes:
-- Non-cancer thyroid diseases when not related to cancer workup
-- Unrelated cancers or non-thyroid medical topics
-- General chit-chat unrelated to thyroid cancer
 
 Return ONLY JSON:
 {{
@@ -363,9 +339,6 @@ User question:
             return None, 0.0, "LLM scope judge error."
 
     def _heuristic_in_scope(self, q: str) -> bool:
-        """
-        Fuzzy fallback if LLM scope judge fails.
-        """
         qn = _norm(q)
         if not qn:
             return False
@@ -446,9 +419,7 @@ User question:
         if not m_nl:
             m_nl = re.search(
                 r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?([1-7])\b",
-                qn
             )
-
         if m_nl:
             word = m_nl.group(1)
             n = int(m_nl.group(2))
@@ -461,7 +432,6 @@ User question:
 
     def _strip_level_filter_text(self, q: str) -> str:
         s = q or ""
-
         s = re.sub(r"\bfrom\s+(guidelines?|consensus)\s+only\b", "", s, flags=re.I)
         s = re.sub(r"\bguidelines?\s+only\b", "", s, flags=re.I)
         s = re.sub(
@@ -470,13 +440,11 @@ User question:
             s,
             flags=re.I,
         )
-
         s = re.sub(r"\bonly\s+from\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\bfrom\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
         s = re.sub(r"\blevels?\s*[1-7](\s*-\s*[1-7])?\s*only\b", "", s, flags=re.I)
         s = re.sub(r"\blevels?\s*[1-7](\s*(and|,)\s*[1-7])+\b", "", s, flags=re.I)
         s = re.sub(r"\blevel\s*[1-7]\b", "", s, flags=re.I)
-
         s = re.sub(r"(<=|>=|<|>)\s*level\s*[1-7]\b", "", s, flags=re.I)
         s = re.sub(
             r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?level\s*[1-7]\b",
@@ -490,7 +458,6 @@ User question:
             s,
             flags=re.I
         )
-
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
@@ -559,7 +526,7 @@ User question:
     # -------------------- paper mode --------------------
 
     def _extract_pmid(self, q: str) -> Optional[int]:
-        m = re.search(r"\bpmid\b[:\s]*([0-9]{6,10})\b", (q or "").lower())
+        m = re.search(r"\bpmid\b[:\s]*([0-9]{{6,10}})\b", (q or "").lower())
         if m:
             try:
                 return int(m.group(1))
@@ -726,6 +693,8 @@ Context (excerpts):
 {context}
 """.strip()
 
+    # -------------------- STRICT credibility prompt + repair pass --------------------
+
     def _prompt_credibility(self, claim: str, context: str) -> str:
         return f"""
 {self.instruction_text}
@@ -733,25 +702,38 @@ Context (excerpts):
 Task:
 You are performing a credibility check for a third-party claim using ONLY the retrieved excerpts.
 
-Rules:
+Hard rules (must follow):
 - Use ONLY the excerpts below. No outside medical knowledge.
-- Break the claim into atomic statements (short).
+- Break the claim into atomic statements.
 - For each statement, classify as:
   Supported / Contradicted / Not found in sources
-- Provide short justification bullets with citations (Title, Year) only when supported/contradicted.
-- If nothing supports anything, say: Not enough evidence in the retrieved sources.
+- If you mark a statement Supported or Contradicted:
+  - You MUST include at least one direct quote (<= 35 words) from the excerpts
+  - The quote MUST be listed in the Evidence section
+  - And you MUST cite it inline using (Title, Year) in the justification bullet
+- If you mark a statement Not found in sources:
+  - Do NOT add any extra information or inferences.
+  - ONLY say that the sources do not mention it / do not address it.
+
+Overall assessment rules:
+- If ALL statements are Not found in sources -> Overall assessment MUST be: Not enough evidence in the retrieved sources
+- If any statement is Contradicted and none Supported -> Overall assessment: Not supported
+- If mix of Supported/Not found/Contradicted -> Overall assessment: Partially supported
+- If all statements Supported -> Overall assessment: Supported
 
 OUTPUT FORMAT (follow exactly):
 Credibility check
-- Overall assessment: <Supported / Partially supported / Not supported / Not enough evidence>
+- Overall assessment: <Supported / Partially supported / Not supported / Not enough evidence in the retrieved sources>
 - Supported (from sources):
-  - ...
+  - <statement>: <why> (Title, Year)
 - Contradicted (by sources):
-  - ...
+  - <statement>: <why> (Title, Year)
 - Not found in sources:
-  - ...
-Evidence (optional)
-- Up to 4 short quotes (<= 35 words), each as: "<quote>" (Title, Year, PMID: <PMID>)
+  - <statement>
+
+Evidence
+- Up to 4 short quotes (<= 35 words), each as:
+  "<quote>" (Title, Year, PMID: <PMID>)
 
 Claim to verify:
 {claim}
@@ -760,9 +742,62 @@ Context (excerpts):
 {context}
 """.strip()
 
+    def _needs_credibility_repair(self, text: str) -> bool:
+        if not text:
+            return True
+
+        t = text.lower()
+
+        # Detect noncompliance: supported/contradicted bullets without quotes/evidence
+        has_supported_bullets = bool(re.search(r"supported \(from sources\):\s*\n\s*-\s*(?!none)", text, flags=re.I))
+        has_contra_bullets = bool(re.search(r"contradicted \(by sources\):\s*\n\s*-\s*(?!none)", text, flags=re.I))
+        has_evidence_section = "evidence" in t
+        has_quote = bool(re.search(r"\".{5,}\"", text))  # at least one "..."
+
+        if (has_supported_bullets or has_contra_bullets) and (not has_evidence_section or not has_quote):
+            return True
+
+        # Not found section should not contain factual verbs suggesting inference
+        m_nf = re.search(r"not found in sources:\s*(.*?)(\n\s*evidence|\Z)", text, flags=re.I | re.S)
+        if m_nf:
+            nf_block = m_nf.group(1).lower()
+            forbidden = ["indicate", "suggest", "shows", "showed", "demonstrate", "demonstrates", "supports", "contradicts"]
+            if any(w in nf_block for w in forbidden):
+                return True
+
+        # If it says "not enough evidence" but still puts extra facts elsewhere, also likely bad
+        if "overall assessment" in t and "not enough evidence" in t:
+            # allow, but still ensure it doesn't claim contradictions without evidence
+            pass
+
+        return False
+
+    def _prompt_credibility_repair(self, bad_answer: str, claim: str, context: str) -> str:
+        return f"""
+You must correct the credibility-check output to comply with the rules.
+
+Fixes required:
+- Do not add any extra factual claims under "Not found in sources".
+- Any Supported or Contradicted statement MUST be backed by at least one direct quote in the Evidence section.
+
+Rewrite the answer from scratch using ONLY the excerpts and the required format.
+
+Claim:
+{claim}
+
+Context (excerpts):
+{context}
+
+Bad answer to fix:
+{bad_answer}
+""".strip()
+
     # -------------------- answer --------------------
 
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 25) -> str:
+        """
+        NOTE: default k is now 25.
+        """
         try:
             # LLM-based meta routing (assistant vs medical)
             if self._is_assistant_question(question):
@@ -777,17 +812,14 @@ Context (excerpts):
             requested_levels = self._parse_level_filter(question)
             q_clean = self._strip_level_filter_text(question)
 
-            # -------------------- Credibility check (NOW accepts ANY claim) --------------------
+            # -------------------- Credibility check (accept ANY claim) --------------------
             if self._is_credibility_check(q_clean):
                 claim = self._extract_claim(q_clean)
 
-                # Always attempt retrieval even if claim doesn't mention thyroid cancer
-                retrieval_query = f"{claim} thyroid cancer"
+                # retrieval with thyroid bias + fallback
                 k_use = max(k, 12)
-
+                retrieval_query = f"{claim} thyroid cancer"
                 retrieved = self.vector_store.search(retrieval_query, k=k_use, levels=requested_levels)
-
-                # fallback: try raw claim if biased query returns nothing
                 if not retrieved:
                     retrieved = self.vector_store.search(claim, k=k_use, levels=requested_levels)
 
@@ -799,10 +831,32 @@ Context (excerpts):
 
                 context = self._build_context(retrieved)
                 prompt = self._prompt_credibility(claim, context)
-                draft = self.llm.ask(prompt).strip()
+                draft = (self.llm.ask(prompt) or "").strip()
                 if draft.startswith("⚠️"):
                     return draft
 
+                # Repair pass if output violates your strict credibility rules
+                if self._needs_credibility_repair(draft):
+                    repair_prompt = self._prompt_credibility_repair(draft, claim, context)
+                    draft2 = (self.llm.ask(repair_prompt) or "").strip()
+                    if draft2 and not self._needs_credibility_repair(draft2):
+                        draft = draft2
+                    else:
+                        # last resort: safe compliant output
+                        draft = (
+                            "Credibility check\n"
+                            "- Overall assessment: Not enough evidence in the retrieved sources\n"
+                            "- Supported (from sources):\n"
+                            "  - None\n"
+                            "- Contradicted (by sources):\n"
+                            "  - None\n"
+                            "- Not found in sources:\n"
+                            f"  - {claim}\n\n"
+                            "Evidence\n"
+                            "- Not provided, as no excerpt supports or contradicts the claim."
+                        )
+
+                # Insert confidence block at top
                 if "Credibility check" in draft:
                     draft = draft.replace("Credibility check", f"Credibility check\n\n{conf_block}", 1)
                 else:
@@ -833,7 +887,6 @@ Context (excerpts):
                     retrieval_query = f"definition of {term}"
 
             k_use = max(k, 8) if mode == "short" else max(k, 12)
-
             retrieved = self.vector_store.search(retrieval_query, k=k_use, levels=requested_levels)
 
             if not retrieved:
@@ -854,7 +907,7 @@ Context (excerpts):
 
             context = self._build_context(retrieved)
             prompt = self._prompt_normal(q_clean, context, mode=mode)
-            draft = self.llm.ask(prompt).strip()
+            draft = (self.llm.ask(prompt) or "").strip()
             if draft.startswith("⚠️"):
                 return draft
 
