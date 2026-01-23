@@ -762,7 +762,7 @@ Context (excerpts):
 
     # -------------------- answer --------------------
 
-    def answer(self, question: str, chat_history: Optional[list] = None, k: int = 5) -> str:
+    def answer(self, question: str, chat_history: Optional[list] = None, k: int = 25) -> str:
         try:
             # LLM-based meta routing (assistant vs medical)
             if self._is_assistant_question(question):
