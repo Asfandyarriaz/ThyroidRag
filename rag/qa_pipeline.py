@@ -262,10 +262,7 @@ User message:
             if label not in ("assistant", "medical", "other"):
                 return None, 0.0, "Invalid label."
 
-            try:
-                conf_f = float(conf)
-            except Exception:
-                conf_f = 0.0
+            conf_f = float(conf) if isinstance(conf, (int, float, str)) else 0.0
             conf_f = max(0.0, min(1.0, conf_f))
             rat = str(rat)[:200]
 
@@ -297,8 +294,7 @@ User message:
         prompt = f"""
 You are a scope classifier for "Thyroid Cancer RAG Assistant".
 
-Goal:
-Decide whether the user's question is IN SCOPE for thyroid cancer.
+Decide whether the user's question is IN SCOPE for thyroid cancer Q&A.
 
 Return ONLY JSON:
 {{
@@ -325,10 +321,7 @@ User question:
             if not isinstance(in_scope, bool):
                 return None, 0.0, "LLM JSON missing boolean in_scope."
 
-            try:
-                conf_f = float(conf)
-            except Exception:
-                conf_f = 0.0
+            conf_f = float(conf) if isinstance(conf, (int, float, str)) else 0.0
             conf_f = max(0.0, min(1.0, conf_f))
             rat = str(rat)[:200]
 
@@ -386,20 +379,24 @@ User question:
 
         levels_found = set()
 
+        # A) keyword synonyms
         for lvl, kws in LEVEL_SYNONYMS.items():
             for kw in kws:
                 if kw in qn:
                     levels_found.add(lvl)
 
+        # B) numeric ranges: levels 1-3
         m_range = re.search(r"\blevels?\s*([1-7])\s*-\s*([1-7])\b", qn)
         if m_range:
             a, b = int(m_range.group(1)), int(m_range.group(2))
             lo, hi = min(a, b), max(a, b)
             return list(range(lo, hi + 1))
 
+        # C) explicit: "level 1", "level 2"
         for n in re.findall(r"\blevel\s*([1-7])\b", qn):
             levels_found.add(int(n))
 
+        # D) symbol comparators
         m_comp = re.search(r"(?:(<=|>=|<|>)\s*)level\s*([1-7])\b", qn)
         if m_comp:
             op, n = m_comp.group(1), int(m_comp.group(2))
@@ -412,6 +409,7 @@ User question:
             if op == ">":
                 return list(range(n + 1, 8))
 
+        # E) natural language comparators (FIXED: we pass qn to re.search)
         m_nl = re.search(
             r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?level\s*([1-7])\b",
             qn
@@ -419,7 +417,9 @@ User question:
         if not m_nl:
             m_nl = re.search(
                 r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?([1-7])\b",
+                qn
             )
+
         if m_nl:
             word = m_nl.group(1)
             n = int(m_nl.group(2))
@@ -526,7 +526,7 @@ User question:
     # -------------------- paper mode --------------------
 
     def _extract_pmid(self, q: str) -> Optional[int]:
-        m = re.search(r"\bpmid\b[:\s]*([0-9]{{6,10}})\b", (q or "").lower())
+        m = re.search(r"\bpmid\b[:\s]*([0-9]{6,10})\b", (q or "").lower())
         if m:
             try:
                 return int(m.group(1))
@@ -746,18 +746,15 @@ Context (excerpts):
         if not text:
             return True
 
-        t = text.lower()
-
-        # Detect noncompliance: supported/contradicted bullets without quotes/evidence
+        # supported/contradicted bullets without quotes
         has_supported_bullets = bool(re.search(r"supported \(from sources\):\s*\n\s*-\s*(?!none)", text, flags=re.I))
         has_contra_bullets = bool(re.search(r"contradicted \(by sources\):\s*\n\s*-\s*(?!none)", text, flags=re.I))
-        has_evidence_section = "evidence" in t
-        has_quote = bool(re.search(r"\".{5,}\"", text))  # at least one "..."
+        has_quote = bool(re.search(r"\".{5,}\"", text))
 
-        if (has_supported_bullets or has_contra_bullets) and (not has_evidence_section or not has_quote):
+        if (has_supported_bullets or has_contra_bullets) and not has_quote:
             return True
 
-        # Not found section should not contain factual verbs suggesting inference
+        # Not found section should not contain inference-y verbs
         m_nf = re.search(r"not found in sources:\s*(.*?)(\n\s*evidence|\Z)", text, flags=re.I | re.S)
         if m_nf:
             nf_block = m_nf.group(1).lower()
@@ -765,22 +762,17 @@ Context (excerpts):
             if any(w in nf_block for w in forbidden):
                 return True
 
-        # If it says "not enough evidence" but still puts extra facts elsewhere, also likely bad
-        if "overall assessment" in t and "not enough evidence" in t:
-            # allow, but still ensure it doesn't claim contradictions without evidence
-            pass
-
         return False
 
     def _prompt_credibility_repair(self, bad_answer: str, claim: str, context: str) -> str:
         return f"""
-You must correct the credibility-check output to comply with the rules.
+Rewrite the credibility-check answer to fully comply with the rules.
 
 Fixes required:
-- Do not add any extra factual claims under "Not found in sources".
-- Any Supported or Contradicted statement MUST be backed by at least one direct quote in the Evidence section.
+- Do not add any factual claims under "Not found in sources".
+- Any Supported or Contradicted statement MUST be backed by a direct quote in Evidence.
 
-Rewrite the answer from scratch using ONLY the excerpts and the required format.
+Use ONLY the excerpts. Keep the exact required format.
 
 Claim:
 {claim}
@@ -796,10 +788,9 @@ Bad answer to fix:
 
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 25) -> str:
         """
-        NOTE: default k is now 25.
+        default k is 25 (retrieval top-k)
         """
         try:
-            # LLM-based meta routing (assistant vs medical)
             if self._is_assistant_question(question):
                 return (
                     "I’m the assistant inside **Thyroid Cancer RAG Assistant**.\n\n"
@@ -812,14 +803,12 @@ Bad answer to fix:
             requested_levels = self._parse_level_filter(question)
             q_clean = self._strip_level_filter_text(question)
 
-            # -------------------- Credibility check (accept ANY claim) --------------------
+            # Credibility check: accept ANY claim
             if self._is_credibility_check(q_clean):
                 claim = self._extract_claim(q_clean)
 
-                # retrieval with thyroid bias + fallback
                 k_use = max(k, 12)
-                retrieval_query = f"{claim} thyroid cancer"
-                retrieved = self.vector_store.search(retrieval_query, k=k_use, levels=requested_levels)
+                retrieved = self.vector_store.search(f"{claim} thyroid cancer", k=k_use, levels=requested_levels)
                 if not retrieved:
                     retrieved = self.vector_store.search(claim, k=k_use, levels=requested_levels)
 
@@ -830,19 +819,15 @@ Bad answer to fix:
                 conf_block = self._format_confidence_block(conf)
 
                 context = self._build_context(retrieved)
-                prompt = self._prompt_credibility(claim, context)
-                draft = (self.llm.ask(prompt) or "").strip()
+                draft = (self.llm.ask(self._prompt_credibility(claim, context)) or "").strip()
                 if draft.startswith("⚠️"):
                     return draft
 
-                # Repair pass if output violates your strict credibility rules
                 if self._needs_credibility_repair(draft):
-                    repair_prompt = self._prompt_credibility_repair(draft, claim, context)
-                    draft2 = (self.llm.ask(repair_prompt) or "").strip()
+                    draft2 = (self.llm.ask(self._prompt_credibility_repair(draft, claim, context)) or "").strip()
                     if draft2 and not self._needs_credibility_repair(draft2):
                         draft = draft2
                     else:
-                        # last resort: safe compliant output
                         draft = (
                             "Credibility check\n"
                             "- Overall assessment: Not enough evidence in the retrieved sources\n"
@@ -856,7 +841,6 @@ Bad answer to fix:
                             "- Not provided, as no excerpt supports or contradicts the claim."
                         )
 
-                # Insert confidence block at top
                 if "Credibility check" in draft:
                     draft = draft.replace("Credibility check", f"Credibility check\n\n{conf_block}", 1)
                 else:
@@ -864,7 +848,7 @@ Bad answer to fix:
 
                 return draft.strip()
 
-            # -------------------- Normal Q&A scope gate --------------------
+            # Normal Q&A scope gate
             if not self._is_in_scope(q_clean):
                 return (
                     "I’m scoped to **thyroid cancer** questions only.\n\n"
@@ -906,8 +890,7 @@ Bad answer to fix:
             conf_block = self._format_confidence_block(conf)
 
             context = self._build_context(retrieved)
-            prompt = self._prompt_normal(q_clean, context, mode=mode)
-            draft = (self.llm.ask(prompt) or "").strip()
+            draft = (self.llm.ask(self._prompt_normal(q_clean, context, mode=mode)) or "").strip()
             if draft.startswith("⚠️"):
                 return draft
 
