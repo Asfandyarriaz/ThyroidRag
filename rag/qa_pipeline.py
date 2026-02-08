@@ -3,7 +3,7 @@ import os
 import re
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple  # Add Tuple here
 
 logging.basicConfig(level=logging.INFO)
 
