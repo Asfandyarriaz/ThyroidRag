@@ -43,7 +43,6 @@ EVIDENCE_PHRASES = [
 SHORT_PREF_PHRASES = ["short", "brief", "concise", "tl;dr", "tldr"]
 LONG_PREF_PHRASES = ["detailed", "in detail", "deep", "comprehensive", "everything", "full explanation", "elaborate"]
 
-# Kept ONLY as heuristic fallback if LLM scope judge fails (normal Q&A path)
 SCOPE_ANCHORS = [
     "thyroid",
     "thyroid cancer",
@@ -71,19 +70,6 @@ EVIDENCE_LEVEL_INFO: Dict[int, Tuple[str, float]] = {
     7: ("Case Reports / Series", 0.40),
 }
 
-LEVEL_SYNONYMS: Dict[int, List[str]] = {
-    1: ["guideline", "guidelines", "practice guideline", "clinical guideline", "consensus", "consensus conference"],
-    2: ["systematic review", "systematic reviews", "meta analysis", "meta-analysis", "network meta", "network meta analysis"],
-    3: ["rct", "rcts", "randomized", "randomised", "randomized controlled trial", "controlled clinical trial", "phase iii", "phase iv"],
-    4: ["clinical trial", "clinical trials", "trial protocol", "equivalence trial", "phase i", "phase ii", "non randomized trial", "non-randomized trial"],
-    5: ["cohort", "cohort study", "cohort studies", "prospective", "retrospective"],
-    6: ["case control", "case-control", "case control study", "case-control study"],
-    7: ["case report", "case reports", "case series", "series", "personal narrative"],
-}
-
-HIERARCHY_HIGH_WORDS = ["higher", "above", "better", "stronger", "top", "best", "greater"]
-HIERARCHY_LOW_WORDS = ["lower", "below", "worse", "weaker", "less"]
-
 MAX_SOURCES = 6
 MAX_CHUNKS_PER_SOURCE = 2
 MAX_EXCERPT_CHARS = 900
@@ -92,8 +78,8 @@ MAX_TOTAL_CONTEXT_CHARS = 6500
 
 def _norm(text: str) -> str:
     t = (text or "").strip().lower()
-    t = re.sub(r"[\s]+", " ", t)
-    t = re.sub(r"[^\w\s\-\[\]]", "", t)  # keep - and [] for patterns like [credibility check]
+    t = re.sub(r"\s+", " ", t)
+    t = re.sub(r"[^\w\s\-]", "", t)
     return t
 
 
@@ -110,730 +96,165 @@ class QAPipeline:
         self.vector_store = vector_store
         self.llm = llm_client
 
-        self._scope_anchors_norm = sorted({_norm(a) for a in SCOPE_ANCHORS if a})
-
         env = os.getenv("ENV", "local").lower()
-        if env == "prod":
-            base_dir = Path(__file__).parent
-            rag_path = base_dir / rag_instruction_file
-            agent_path = base_dir / agent_instruction_file
-        else:
-            rag_path = Path(rag_instruction_file)
-            agent_path = Path(agent_instruction_file)
+        base = Path(__file__).parent if env == "prod" else Path(".")
+        self.rag_instructions = (base / rag_instruction_file).read_text(encoding="utf-8")
+        self.agent_instructions = (base / agent_instruction_file).read_text(encoding="utf-8")
 
-        self.rag_instructions = self._load_instruction(rag_path)
-        self.agent_instructions = self._load_instruction(agent_path)
-        self.instruction_text = self._combine_instructions()
+        self.instruction_text = f"{self.agent_instructions}\n\n{self.rag_instructions}".strip()
 
-        # caches
-        self._intent_cache: Dict[str, Tuple[str, float, str]] = {}
-        self._scope_cache: Dict[str, Tuple[bool, float, str]] = {}
-
-    # -------------------- instruction loading --------------------
-
-    def _load_instruction(self, file_path: Path) -> str:
-        if not file_path.exists():
-            logging.warning(f"Instruction file {file_path} not found.")
-            return ""
-        try:
-            return file_path.read_text(encoding="utf-8").strip()
-        except Exception as e:
-            logging.error(f"Failed to load instruction file {file_path}: {e}")
-            return ""
-
-    def _combine_instructions(self) -> str:
-        parts: List[str] = []
-        if self.agent_instructions:
-            parts.append(self.agent_instructions)
-        if self.rag_instructions:
-            parts.append(self.rag_instructions)
-        return "\n\n".join(parts).strip()
-
-    # -------------------- routing helpers --------------------
-
-    def _is_paper_request(self, q: str) -> bool:
-        qn = _norm(q)
-        return any(p in qn for p in PAPER_PHRASES)
-
-    def _wants_evidence(self, q: str) -> bool:
-        qn = _norm(q)
-        return any(p in qn for p in EVIDENCE_PHRASES)
-
-    def _wants_short(self, q: str) -> bool:
-        qn = _norm(q)
-        return any(p in qn for p in SHORT_PREF_PHRASES)
-
-    def _wants_long(self, q: str) -> bool:
-        qn = _norm(q)
-        return any(p in qn for p in LONG_PREF_PHRASES)
-
-    def _is_definition_question(self, q: str) -> bool:
-        qn = _norm(q)
-        return (
-            qn.startswith("what is")
-            or qn.startswith("define")
-            or qn.startswith("explain")
-            or qn.startswith("tell me about")
-            or qn.startswith("overview of")
-            or qn.startswith("describe")
-        )
-
-    def _extract_term(self, q: str) -> str:
-        raw = (q or "").strip()
-        raw = re.sub(r"[?!.]+$", "", raw).strip()
-        ql = raw.lower()
-        for prefix in ("what is", "define", "explain", "tell me about", "overview of", "describe"):
-            if ql.startswith(prefix):
-                return raw[len(prefix):].strip()
-        return raw
+    # -------------------- mode selection --------------------
 
     def _select_mode(self, q: str) -> str:
-        if self._wants_evidence(q):
+        if any(p in _norm(q) for p in EVIDENCE_PHRASES):
             return "evidence"
-        if self._wants_long(q):
-            return "standard"
-        if self._wants_short(q):
+        if any(p in _norm(q) for p in SHORT_PREF_PHRASES):
             return "short"
+        return "overview"
 
-        wc = len(_norm(q).split())
-        if self._is_definition_question(q) and wc <= 10:
-            return "short"
-        if wc <= 6:
-            return "short"
-        return "standard"
-
-    # -------------------- JSON extraction helper --------------------
-
-    def _extract_json_object(self, s: str) -> Optional[str]:
-        if not s:
-            return None
-        s = s.strip()
-        if s.startswith("{") and s.endswith("}"):
-            return s
-        m = re.search(r"\{.*\}", s, flags=re.S)
-        return m.group(0) if m else None
-
-    # -------------------- LLM intent router (assistant vs medical) --------------------
-
-    def _llm_intent_router(self, q: str) -> Tuple[Optional[str], float, str]:
-        q_clean = (q or "").strip()
-        if not q_clean:
-            return None, 0.0, "Empty question."
-
-        qn = _norm(q_clean)
-        if qn in self._intent_cache:
-            label, conf, rat = self._intent_cache[qn]
-            return label, conf, rat
-
-        prompt = f"""
-You are an intent router for an app called "Thyroid Cancer RAG Assistant".
-
-Pick EXACTLY ONE label:
-- "assistant": the user asks about the chatbot/app itself (who are you, what can you do, how it works, help using it)
-- "medical": the user asks about thyroid cancer topics
-- "other": neither
-
-Important:
-- If user mentions cancer (e.g., "what is this cancer"), choose "medical" not "assistant".
-- Choose "assistant" only when clearly about the chatbot/app.
-
-Return ONLY JSON:
-{{
-  "label": "assistant" | "medical" | "other",
-  "confidence": 0 to 1,
-  "rationale": "<= 20 words"
-}}
-
-User message:
-{q_clean}
-""".strip()
-
-        try:
-            raw = (self.llm.ask(prompt) or "").strip()
-            js = self._extract_json_object(raw)
-            if not js:
-                return None, 0.0, "LLM did not return JSON."
-            data = json.loads(js)
-
-            label = data.get("label")
-            conf = data.get("confidence", 0.0)
-            rat = data.get("rationale", "") or ""
-
-            if label not in ("assistant", "medical", "other"):
-                return None, 0.0, "Invalid label."
-
-            conf_f = float(conf) if isinstance(conf, (int, float, str)) else 0.0
-            conf_f = max(0.0, min(1.0, conf_f))
-            rat = str(rat)[:200]
-
-            self._intent_cache[qn] = (label, conf_f, rat)
-            return label, conf_f, rat
-        except Exception as e:
-            logging.warning(f"LLM intent router failed: {e}")
-            return None, 0.0, "LLM intent router error."
-
-    def _is_assistant_question(self, q: str) -> bool:
-        label, _conf, _rat = self._llm_intent_router(q)
-        if label is None:
-            qn = _norm(q)
-            return any(x in qn for x in ["who are you", "what can you do", "how does this work", "help"])
-        return label == "assistant"
-
-    # -------------------- scope check (LLM-based, normal Q&A only) --------------------
-
-    def _llm_scope_judge(self, q: str) -> Tuple[Optional[bool], float, str]:
-        q_clean = (q or "").strip()
-        if not q_clean:
-            return None, 0.0, "Empty question."
-
-        qn = _norm(q_clean)
-        if qn in self._scope_cache:
-            ok, conf, rat = self._scope_cache[qn]
-            return ok, conf, rat
-
-        prompt = f"""
-You are a scope classifier for "Thyroid Cancer RAG Assistant".
-
-Decide whether the user's question is IN SCOPE for thyroid cancer Q&A.
-
-Return ONLY JSON:
-{{
-  "in_scope": true/false,
-  "confidence": 0 to 1,
-  "rationale": "<= 20 words"
-}}
-
-User question:
-{q_clean}
-""".strip()
-
-        try:
-            raw = (self.llm.ask(prompt) or "").strip()
-            js = self._extract_json_object(raw)
-            if not js:
-                return None, 0.0, "LLM did not return JSON."
-            data = json.loads(js)
-
-            in_scope = data.get("in_scope", None)
-            conf = data.get("confidence", 0.0)
-            rat = data.get("rationale", "") or ""
-
-            if not isinstance(in_scope, bool):
-                return None, 0.0, "LLM JSON missing boolean in_scope."
-
-            conf_f = float(conf) if isinstance(conf, (int, float, str)) else 0.0
-            conf_f = max(0.0, min(1.0, conf_f))
-            rat = str(rat)[:200]
-
-            self._scope_cache[qn] = (in_scope, conf_f, rat)
-            return in_scope, conf_f, rat
-        except Exception as e:
-            logging.warning(f"LLM scope judge failed: {e}")
-            return None, 0.0, "LLM scope judge error."
-
-    def _heuristic_in_scope(self, q: str) -> bool:
-        qn = _norm(q)
-        if not qn:
-            return False
-        if "thyroid" in qn:
-            return True
-        for tok in qn.split():
-            if fuzz.ratio(tok, "thyroid") >= 80:
-                return True
-        match = process.extractOne(qn, self._scope_anchors_norm, scorer=fuzz.token_set_ratio)
-        return bool(match and match[1] >= 75)
-
-    def _is_in_scope(self, q: str) -> bool:
-        in_scope, _conf, _rat = self._llm_scope_judge(q)
-        if in_scope is None:
-            return self._heuristic_in_scope(q)
-        return bool(in_scope)
-
-    # -------------------- credibility mode --------------------
-
-    def _is_credibility_check(self, q: str) -> bool:
-        q_strip = (q or "").strip().lower()
-        return (
-            q_strip.startswith("credibility_check:")
-            or q_strip.startswith("check credibility:")
-            or q_strip.startswith("[credibility check]")
-        )
-
-    def _extract_claim(self, q: str) -> str:
-        s = (q or "").strip()
-        lower = s.lower()
-        if lower.startswith("credibility_check:"):
-            return s[len("credibility_check:"):].strip()
-        if lower.startswith("check credibility:"):
-            return s[len("check credibility:"):].strip()
-        if lower.startswith("[credibility check]"):
-            return s[len("[credibility check]"):].strip()
-        return s
-
-    # -------------------- level filter parsing --------------------
-
-    def _parse_level_filter(self, q: str) -> Optional[List[int]]:
-        qn = _norm(q)
-        if not qn:
-            return None
-
-        levels_found = set()
-
-        # A) keyword synonyms
-        for lvl, kws in LEVEL_SYNONYMS.items():
-            for kw in kws:
-                if kw in qn:
-                    levels_found.add(lvl)
-
-        # B) numeric ranges: levels 1-3
-        m_range = re.search(r"\blevels?\s*([1-7])\s*-\s*([1-7])\b", qn)
-        if m_range:
-            a, b = int(m_range.group(1)), int(m_range.group(2))
-            lo, hi = min(a, b), max(a, b)
-            return list(range(lo, hi + 1))
-
-        # C) explicit: "level 1", "level 2"
-        for n in re.findall(r"\blevel\s*([1-7])\b", qn):
-            levels_found.add(int(n))
-
-        # D) symbol comparators
-        m_comp = re.search(r"(?:(<=|>=|<|>)\s*)level\s*([1-7])\b", qn)
-        if m_comp:
-            op, n = m_comp.group(1), int(m_comp.group(2))
-            if op == "<=":
-                return list(range(1, n + 1))
-            if op == "<":
-                return list(range(1, n))
-            if op == ">=":
-                return list(range(n, 8))
-            if op == ">":
-                return list(range(n + 1, 8))
-
-        # E) natural language comparators
-        m_nl = re.search(
-            r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?level\s*([1-7])\b",
-            qn
-        )
-        if not m_nl:
-            m_nl = re.search(
-                r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(?:than\s+)?([1-7])\b",
-                qn
-            )
-
-        if m_nl:
-            word = m_nl.group(1)
-            n = int(m_nl.group(2))
-            if word in HIERARCHY_HIGH_WORDS:
-                return list(range(1, n + 1))
-            if word in HIERARCHY_LOW_WORDS:
-                return list(range(n, 8))
-
-        return sorted(levels_found) if levels_found else None
-
-    def _strip_level_filter_text(self, q: str) -> str:
-        s = q or ""
-        s = re.sub(r"\bfrom\s+(guidelines?|consensus)\s+only\b", "", s, flags=re.I)
-        s = re.sub(r"\bguidelines?\s+only\b", "", s, flags=re.I)
-        s = re.sub(
-            r"\b(systematic review|meta[\s\-]?analysis|rcts?|randomi[sz]ed|clinical trials?|cohort|case[\s\-]?control|case reports?|case series)\s+only\b",
-            "",
-            s,
-            flags=re.I,
-        )
-        s = re.sub(r"\bonly\s+from\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
-        s = re.sub(r"\bfrom\s+levels?\s*[1-7](\s*-\s*[1-7])?\b", "", s, flags=re.I)
-        s = re.sub(r"\blevels?\s*[1-7](\s*-\s*[1-7])?\s*only\b", "", s, flags=re.I)
-        s = re.sub(r"\blevels?\s*[1-7](\s*(and|,)\s*[1-7])+\b", "", s, flags=re.I)
-        s = re.sub(r"\blevel\s*[1-7]\b", "", s, flags=re.I)
-        s = re.sub(r"(<=|>=|<|>)\s*level\s*[1-7]\b", "", s, flags=re.I)
-        s = re.sub(
-            r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?level\s*[1-7]\b",
-            "",
-            s,
-            flags=re.I
-        )
-        s = re.sub(
-            r"\b(higher|above|better|stronger|greater|lower|below|worse|weaker|less)\s+(than\s+)?[1-7]\b",
-            "",
-            s,
-            flags=re.I
-        )
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
-
-    # -------------------- confidence rating --------------------
-
-    def _safe_int(self, x: Any) -> Optional[int]:
-        try:
-            if x is None or isinstance(x, bool):
-                return None
-            return int(float(x))
-        except Exception:
-            return None
+    # -------------------- confidence --------------------
 
     def _compute_confidence(self, retrieved: List[Dict[str, Any]]) -> Dict[str, Any]:
-        by_source: Dict[str, Dict[str, Any]] = {}
-        for r in retrieved or []:
-            pmid = r.get("pmid")
-            key = str(pmid) if pmid else str(r.get("title") or id(r))
-            if key not in by_source:
-                by_source[key] = r
-
-        levels: List[int] = []
-        for src in by_source.values():
-            lvl = self._safe_int(src.get("evidence_level"))
-            if lvl in EVIDENCE_LEVEL_INFO:
-                levels.append(lvl)
-
+        levels = [r.get("evidence_level") for r in retrieved if r.get("evidence_level") in EVIDENCE_LEVEL_INFO]
         if not levels:
-            return {"label": "Low", "score": 0, "breakdown": "No evidence level metadata found."}
+            return {"label": "Low", "score": 0, "breakdown": "No evidence metadata."}
 
         weights = [EVIDENCE_LEVEL_INFO[l][1] for l in levels]
-        avg_weight = sum(weights) / len(weights)
+        score = int(round((sum(weights) / len(weights)) * 100))
+        label = "High" if score >= 85 else "Medium" if score >= 65 else "Low"
 
-        n = len(levels)
-        if n == 1:
-            avg_weight *= 0.90
-        elif n == 2:
-            avg_weight *= 0.95
-
-        score = int(round(avg_weight * 100))
-        if score >= 85:
-            label = "High"
-        elif score >= 65:
-            label = "Medium"
-        else:
-            label = "Low"
-
-        counts: Dict[int, int] = {}
-        for l in levels:
-            counts[l] = counts.get(l, 0) + 1
-
-        parts = []
-        for lvl in sorted(counts.keys()):
-            parts.append(f"Level {lvl} ({EVIDENCE_LEVEL_INFO[lvl][0]}): {counts[lvl]}")
-        breakdown = "; ".join(parts)
+        breakdown = "; ".join(
+            f"Level {l} ({EVIDENCE_LEVEL_INFO[l][0]}): {levels.count(l)}"
+            for l in sorted(set(levels))
+        )
 
         return {"label": label, "score": score, "breakdown": breakdown}
 
     def _format_confidence_block(self, conf: Dict[str, Any]) -> str:
         return (
-            "Confidence rating\n"
-            f"- **{conf['label']}** ({conf['score']}/100)\n"
-            f"- Based on retrieved evidence levels: {conf['breakdown']}"
+            f"- Confidence: **{conf['label']}** ({conf['score']}/100)\n"
+            f"- Evidence levels: {conf['breakdown']}"
         )
-
-    # -------------------- paper mode --------------------
-
-    def _extract_pmid(self, q: str) -> Optional[int]:
-        m = re.search(r"\bpmid\b[:\s]*([0-9]{6,10})\b", (q or "").lower())
-        if m:
-            try:
-                return int(m.group(1))
-            except Exception:
-                return None
-        return None
-
-    def _paper_lookup_response(self, retrieved: List[Dict[str, Any]], requested_pmid: Optional[int]) -> str:
-        if not retrieved:
-            return (
-                "That paper is not available in the indexed dataset. "
-                "I can only show papers that appear in the retrieved sources."
-            )
-
-        if requested_pmid is not None:
-            filtered = [r for r in retrieved if r.get("pmid") == requested_pmid]
-            if filtered:
-                retrieved = filtered
-
-        groups: Dict[str, List[Dict[str, Any]]] = {}
-        for r in retrieved:
-            key = str(r.get("pmid") or r.get("title") or "unknown")
-            groups.setdefault(key, []).append(r)
-
-        best_key = max(groups.keys(), key=lambda k: len(groups[k]))
-        chunks = groups[best_key]
-        meta = chunks[0]
-
-        title = (meta.get("title") or "").strip() or "Unknown title"
-        year = meta.get("year")
-        pmid = meta.get("pmid")
-        doi = meta.get("doi")
-
-        lines: List[str] = []
-        lines.append("Paper details:")
-        lines.append(f"- Title: {title}")
-        lines.append(f"- Year: {year if year else 'Not available'}")
-        lines.append(f"- PMID: {pmid if pmid else 'Not available'}")
-        lines.append(f"- DOI: {doi if doi else 'DOI not available in the indexed metadata.'}")
-        if pmid:
-            lines.append(f"- PubMed link: https://pubmed.ncbi.nlm.nih.gov/{pmid}/")
-        if doi:
-            lines.append(f"- DOI link: https://doi.org/{doi}")
-
-        lines.append("")
-        lines.append("Available excerpts in this database:")
-        shown = 0
-        for c in chunks:
-            txt = (c.get("text") or "").strip()
-            if not txt:
-                continue
-            shown += 1
-            lines.append(f"- Excerpt {shown}: {txt[:700].rstrip()}…")
-            if shown >= 6:
-                break
-
-        return "\n".join(lines)
 
     # -------------------- context builder --------------------
 
     def _build_context(self, retrieved: List[Dict[str, Any]]) -> str:
-        def _score(x: Dict[str, Any]) -> float:
-            s = x.get("score")
-            try:
-                return float(s)
-            except Exception:
-                return -1.0
-
-        ranked = sorted(retrieved or [], key=_score, reverse=True)
-
         grouped: Dict[str, List[Dict[str, Any]]] = {}
-        for r in ranked:
-            pmid = r.get("pmid")
-            key = str(pmid) if pmid else str(r.get("title") or "unknown")
+        for r in retrieved:
+            key = str(r.get("pmid") or r.get("title"))
             grouped.setdefault(key, []).append(r)
 
-        source_keys = sorted(grouped.keys(), key=lambda k: _score(grouped[k][0]), reverse=True)[:MAX_SOURCES]
-
-        parts: List[str] = []
+        parts = []
         total = 0
-        src_idx = 0
 
-        for key in source_keys:
-            src_idx += 1
-            hits = grouped[key][:MAX_CHUNKS_PER_SOURCE]
-
-            meta = hits[0]
-            title = (meta.get("title") or "").strip()
-            year = meta.get("year", "")
-            pmid = meta.get("pmid", "")
-            doi = meta.get("doi", "")
-            level = meta.get("evidence_level", "")
-
-            if title and year:
-                label = f"{title} ({year})"
-            elif title:
-                label = title
-            else:
-                label = f"Source {src_idx}"
-
-            header = f"SOURCE {src_idx}: {label}\nPMID: {pmid} | DOI: {doi} | Year: {year} | Evidence level: {level}\n"
+        for idx, group in enumerate(grouped.values(), start=1):
+            meta = group[0]
+            header = (
+                f"SOURCE {idx}: {meta.get('title')} ({meta.get('year')})\n"
+                f"PMID: {meta.get('pmid')} | Evidence level: {meta.get('evidence_level')}\n"
+            )
             if total + len(header) > MAX_TOTAL_CONTEXT_CHARS:
                 break
             parts.append(header)
             total += len(header)
 
-            for h in hits:
-                text = (h.get("text") or "").strip()
-                if not text:
-                    continue
-                if len(text) > MAX_EXCERPT_CHARS:
-                    text = text[:MAX_EXCERPT_CHARS].rstrip() + "…"
-
+            for g in group[:MAX_CHUNKS_PER_SOURCE]:
+                text = g.get("text", "")[:MAX_EXCERPT_CHARS]
                 block = f"EXCERPT:\n{text}\n"
                 if total + len(block) > MAX_TOTAL_CONTEXT_CHARS:
                     break
                 parts.append(block)
                 total += len(block)
 
-            if total >= MAX_TOTAL_CONTEXT_CHARS:
-                break
-
-        return "\n".join(parts).strip()
+        return "\n".join(parts)
 
     # -------------------- prompts --------------------
 
-    def _prompt_normal(self, question: str, context: str, mode: str) -> str:
-        if mode == "short":
-            output_format = """A) Definition
-- 1–2 bullets, each ending with (Title, Year).
+    def _prompt_overview(self, question: str, context: str) -> str:
+        return f"""
+{self.instruction_text}
 
-B) Key sources
-- 1–3 bullet items: (Title, Year)
+Task:
+Write a clear, patient-friendly medical overview similar to Google's AI Overview.
 
-(Do not include a Summary section in short mode.)"""
-        elif mode == "evidence":
-            output_format = """A) Definition
-- 1–2 bullets, each ending with (Title, Year).
+Rules:
+- Use ONLY the information in the excerpts
+- Do NOT cite sources inline
+- Do NOT mention confidence scores or evidence levels
+- Do NOT add information not present in the excerpts
 
-B) Summary
-- 3–5 bullets, each ending with (Title, Year).
+OUTPUT FORMAT (follow exactly):
 
-C) Verbatim evidence
-- 3–5 direct quotes (<= 35 words each) as: "<quote>" (Title, Year, PMID: <PMID>)"""
-        else:
-            output_format = """A) Definition
-- 1–2 bullets, each ending with (Title, Year).
+AI Overview
+<1–2 paragraph summary>
 
-B) Summary
-- 3–5 bullets, each ending with (Title, Year)."""
+Standard Surgical Options
+- ...
 
+Factors Influencing Surgical Choice
+- ...
+
+Other Management Approaches
+- ...
+
+Potential Risks
+- ...
+
+Context:
+{context}
+""".strip()
+
+    def _prompt_normal(self, question: str, context: str) -> str:
         return f"""
 {self.instruction_text}
 
 You MUST answer using ONLY the excerpts in the context.
 
-OUTPUT FORMAT (follow exactly):
-{output_format}
+OUTPUT FORMAT:
+A) Definition
+- 1–2 bullets (Title, Year)
 
-User question:
-{question}
+B) Summary
+- 3–5 bullets (Title, Year)
 
-Context (excerpts):
-{context}
-""".strip()
-
-    # -------------------- NEW credibility: semantic match (no strict quote rules) --------------------
-
-    def _prompt_credibility(self, claim: str, context: str) -> str:
-        return f"""
-{self.instruction_text}
-
-Task:
-Evaluate the credibility of the CLAIM using ONLY the retrieved excerpts.
-This is a semantic check (meaning-based), NOT a word-for-word match.
-
-Rules:
-- Use ONLY the excerpts below. Do not use outside medical knowledge.
-- Break the claim into 1–3 atomic statements.
-- For each statement, decide one label:
-  Supported = excerpts clearly imply the statement (even if paraphrased)
-  Contradicted = excerpts clearly imply the opposite
-  Unclear = excerpts are missing, too vague, or mixed
-- Provide a short justification for each statement.
-- Cite sources as (Title, Year).
-- Quotes are OPTIONAL. Use at most 2 short quotes total, only if they strongly help.
-
-OUTPUT FORMAT (follow exactly):
-Credibility check
-- Overall assessment: <Supported / Partially supported / Not supported / Unclear>
-- Statement results:
-  1) <statement> — <Supported/Contradicted/Unclear>
-     - Why: ...
-     - Sources: (Title, Year), (Title, Year)
-  2) ...
-
-Optional evidence
-- "<short quote>" (Title, Year, PMID: <PMID>)
-
-Claim:
-{claim}
-
-Context (excerpts):
+Context:
 {context}
 """.strip()
 
     # -------------------- answer --------------------
 
     def answer(self, question: str, chat_history: Optional[list] = None, k: int = 25) -> str:
-        """
-        default k is 25 (retrieval top-k)
-        """
-        try:
-            if self._is_assistant_question(question):
-                return (
-                    "I’m the assistant inside **Thyroid Cancer RAG Assistant**.\n\n"
-                    "- I answer **thyroid cancer** questions by retrieving relevant excerpts from your indexed dataset (Qdrant).\n"
-                    "- Then I generate an evidence-grounded response using only those excerpts.\n\n"
-                    "You can ask about: thyroid cancer types (PTC/FTC/MTC/ATC), nodules, ultrasound/TIRADS, biopsy/FNA, "
-                    "staging, surgery, radioiodine (RAI), follow-up, recurrence, and prognosis."
-                )
+        mode = self._select_mode(question)
 
-            requested_levels = self._parse_level_filter(question)
-            q_clean = self._strip_level_filter_text(question)
+        retrieved = self.vector_store.search(question, k=max(k, 12))
+        if not retrieved:
+            return "Not enough evidence in the retrieved sources."
 
-            # Credibility check: accept ANY claim + semantic comparison
-            if self._is_credibility_check(q_clean):
-                claim = self._extract_claim(q_clean)
+        context = self._build_context(retrieved)
+        conf = self._compute_confidence(retrieved)
+        conf_block = self._format_confidence_block(conf)
 
-                k_use = max(k, 12)
-                retrieved = self.vector_store.search(f"{claim} thyroid cancer", k=k_use, levels=requested_levels)
-                if not retrieved:
-                    retrieved = self.vector_store.search(claim, k=k_use, levels=requested_levels)
+        if mode == "overview":
+            draft = self.llm.ask(self._prompt_overview(question, context)).strip()
 
-                if not retrieved:
-                    return "Not enough evidence in the retrieved sources."
+            sources = []
+            seen = set()
+            for r in retrieved:
+                key = (r.get("title"), r.get("year"))
+                if key not in seen:
+                    seen.add(key)
+                    sources.append(f"- {r.get('title')} ({r.get('year')})")
+                if len(sources) >= MAX_SOURCES:
+                    break
 
-                conf = self._compute_confidence(retrieved)
-                conf_block = self._format_confidence_block(conf)
+            return f"""{draft}
 
-                context = self._build_context(retrieved)
-                draft = (self.llm.ask(self._prompt_credibility(claim, context)) or "").strip()
-                if draft.startswith("⚠️"):
-                    return draft
+---
+Evidence Summary (optional)
+{conf_block}
 
-                if "Credibility check" in draft:
-                    draft = draft.replace("Credibility check", f"Credibility check\n\n{conf_block}", 1)
-                else:
-                    draft = f"Credibility check\n\n{conf_block}\n\n{draft}"
+Key Sources
+{chr(10).join(sources)}
+""".strip()
 
-                return draft.strip()
-
-            # Normal Q&A scope gate
-            if not self._is_in_scope(q_clean):
-                return (
-                    "I’m scoped to **thyroid cancer** questions only.\n\n"
-                    "Try asking about thyroid nodules, ultrasound features, biopsy/FNA, thyroid cancer subtypes, staging, "
-                    "surgery, radioiodine (RAI), follow-up, or recurrence."
-                )
-
-            # Paper lookup
-            if self._is_paper_request(question):
-                requested_pmid = self._extract_pmid(question)
-                retrieved = self.vector_store.search(q_clean, k=max(k, 12), levels=requested_levels)
-                return self._paper_lookup_response(retrieved, requested_pmid)
-
-            mode = self._select_mode(q_clean)
-
-            retrieval_query = q_clean
-            if self._is_definition_question(q_clean):
-                term = self._extract_term(q_clean)
-                if term:
-                    retrieval_query = f"definition of {term}"
-
-            k_use = max(k, 8) if mode == "short" else max(k, 12)
-            retrieved = self.vector_store.search(retrieval_query, k=k_use, levels=requested_levels)
-
-            if not retrieved:
-                term = self._extract_term(q_clean)
-                expanded = f"overview of {term} thyroid cancer" if term else f"overview of {q_clean}"
-                retrieved = self.vector_store.search(expanded, k=max(k_use, 10), levels=requested_levels)
-
-            if not retrieved:
-                if requested_levels:
-                    return (
-                        f"Not enough evidence in the retrieved sources for **Level(s) {requested_levels}**.\n\n"
-                        "Try removing the level filter (or asking a narrower question)."
-                    )
-                return "Not enough evidence in the retrieved sources."
-
-            conf = self._compute_confidence(retrieved)
-            conf_block = self._format_confidence_block(conf)
-
-            context = self._build_context(retrieved)
-            draft = (self.llm.ask(self._prompt_normal(q_clean, context, mode=mode)) or "").strip()
-            if draft.startswith("⚠️"):
-                return draft
-
-            if "B) Summary" in draft:
-                draft = draft.replace("B) Summary", f"{conf_block}\n\nB) Summary", 1)
-            elif "B) Key sources" in draft:
-                draft = draft.replace("B) Key sources", f"{conf_block}\n\nB) Key sources", 1)
-            else:
-                draft = f"{draft}\n\n{conf_block}"
-
-            return draft.strip()
-
-        except Exception as e:
-            logging.exception(f"Error during answer generation: {e}")
-            return "⚠️ Something went wrong while generating the answer. Please try again."
+        return self.llm.ask(self._prompt_normal(question, context)).strip()
