@@ -1,7 +1,6 @@
 # ui/layout.py
 import streamlit as st
 
-
 def setup_page():
     st.set_page_config(
         page_title="Thyroid Cancer RAG Assistant",
@@ -9,7 +8,6 @@ def setup_page():
         layout="wide",
         initial_sidebar_state="expanded",
     )
-
 
 def inject_custom_css():
     st.markdown(
@@ -66,7 +64,6 @@ div[data-testid="stChatInput"] textarea {
   border-radius: 14px !important;
   box-shadow: 0 6px 18px rgba(17,24,39,0.08);
 }
-
 div[data-testid="stChatInput"] textarea::placeholder {
   color: rgba(17,24,39,0.45) !important;
 }
@@ -94,11 +91,40 @@ div[data-testid="stChatInput"] textarea::placeholder {
   font-weight: 750;
   color: #0f172a;
 }
+
+/* === DIAGNOSTIC STYLES === */
+.diagnostic-score {
+  display: inline-block;
+  background: #dbeafe;
+  color: #1e40af;
+  padding: 0.25rem 0.6rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-left: 0.5rem;
+}
+
+/* Diagnostic container styling */
+div[data-testid="stExpander"] {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  margin: 0.5rem 0;
+  background: #ffffff;
+}
+
+/* Make text areas in diagnostics more readable */
+textarea[disabled] {
+  background-color: #f9fafb !important;
+  border: 1px solid #e5e7eb !important;
+  color: #374151 !important;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+}
 </style>
 """,
         unsafe_allow_html=True,
     )
-
 
 def page_title():
     st.markdown(
