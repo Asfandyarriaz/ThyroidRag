@@ -44,6 +44,51 @@ class QAPipeline:
         base = Path(__file__).parent if env == "prod" else Path(".")
         self.instructions = (base / instruction_file).read_text(encoding="utf-8")
 
+    def diagnose_retrieval(self, question: str, k: int = 10) -> Dict[str, Any]:
+        """
+        Diagnostic tool to see what's actually being retrieved.
+        Returns detailed info about retrieved chunks.
+        """
+        logger.info("=== DIAGNOSTIC MODE ===")
+        
+        # Generate sub-queries
+        sub_queries = self._expand_query_with_llm(question)
+        
+        diagnosis = {
+            "original_question": question,
+            "sub_queries_generated": sub_queries,
+            "retrieval_results": []
+        }
+        
+        # Test each sub-query
+        for idx, sub_query in enumerate(sub_queries, 1):
+            logger.info(f"Testing sub-query {idx}/{len(sub_queries)}: {sub_query}")
+            
+            chunks = self.vector_store.search(sub_query, k=k)
+            
+            result = {
+                "query": sub_query,
+                "chunks_found": len(chunks),
+                "sample_chunks": []
+            }
+            
+            # Show first 3 chunks with full details
+            for i, chunk in enumerate(chunks[:3], 1):
+                result["sample_chunks"].append({
+                    "rank": i,
+                    "title": chunk.get("title", "No title"),
+                    "year": chunk.get("year", "Unknown"),
+                    "pmid": chunk.get("pmid", "Unknown"),
+                    "evidence_level": chunk.get("evidence_level", "Unknown"),
+                    "score": chunk.get("score", 0.0),
+                    "text_preview": chunk.get("text", "")[:400] + "..."
+                })
+            
+            diagnosis["retrieval_results"].append(result)
+        
+        logger.info("=== END DIAGNOSTIC ===")
+        return diagnosis
+
     def _expand_query_with_llm(self, question: str) -> List[str]:
         """
         Use LLM to intelligently expand the query into multiple sub-queries
@@ -286,41 +331,6 @@ Return ONLY a JSON array of 3-5 search queries, no other text:"""
 
         return "".join(parts)
 
-    # Add this diagnostic method to your QAPipeline class
-
-def diagnose_retrieval(self, question: str) -> Dict[str, Any]:
-    """
-    Diagnostic tool to see what's actually being retrieved.
-    Returns detailed info about retrieved chunks.
-    """
-    sub_queries = self._expand_query_with_llm(question)
-    
-    diagnosis = {
-        "original_question": question,
-        "sub_queries": sub_queries,
-        "retrieval_results": []
-    }
-    
-    for sub_query in sub_queries:
-        chunks = self.vector_store.search(sub_query, k=10)
-        
-        result = {
-            "query": sub_query,
-            "chunks_found": len(chunks),
-            "sample_texts": []
-        }
-        
-        for chunk in chunks[:3]:  # Show first 3 chunks
-            result["sample_texts"].append({
-                "title": chunk.get("title"),
-                "year": chunk.get("year"),
-                "text_preview": chunk.get("text", "")[:300] + "..."
-            })
-        
-        diagnosis["retrieval_results"].append(result)
-    
-    return diagnosis
-
     def _compute_confidence(self, retrieved: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Calculate confidence based on evidence levels."""
         levels = [
@@ -422,7 +432,7 @@ Now provide your answer following the format above:
         self, 
         question: str, 
         chat_history: Optional[list] = None, 
-        k: int = 30  # Increased default for better coverage
+        k: int = 30
     ) -> str:
         """
         Generate a Google-style overview answer to the question.
