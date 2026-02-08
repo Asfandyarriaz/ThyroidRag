@@ -1,5 +1,6 @@
 # app.py
 import re
+import json
 import streamlit as st
 
 from core.pipeline_loader import init_pipeline
@@ -29,7 +30,7 @@ if "messages" not in st.session_state:
 
 # sidebar controls
 with st.sidebar:
-    st.markdown("⚙️ Controls")
+    st.markdown("⚙️ **Controls**")
     mode = st.radio(
         "Answer style",
         ["Short", "Standard", "Evidence"],
@@ -39,9 +40,60 @@ with st.sidebar:
 
     st.markdown("---")
 
+    # === DIAGNOSTICS SECTION ===
+    st.markdown("🔍 **Diagnostics**")
+    
+    with st.expander("Query Retrieval Analysis", expanded=False):
+        st.caption("See what documents are retrieved for any query")
+        
+        diagnostic_query = st.text_input(
+            "Test Query",
+            placeholder="Enter a question to diagnose...",
+            key="diagnostic_query_input",
+            help="Analyze which chunks are retrieved for this query"
+        )
+        
+        chunks_k = st.slider(
+            "Chunks per sub-query",
+            min_value=5,
+            max_value=20,
+            value=10,
+            key="diagnostic_k",
+            help="Number of chunks to retrieve for each generated sub-query"
+        )
+        
+        run_diagnostic = st.button(
+            "🔍 Run Diagnostic",
+            use_container_width=True,
+            type="secondary",
+            key="run_diagnostic_btn"
+        )
+        
+        if run_diagnostic and diagnostic_query:
+            with st.spinner("Running diagnostic analysis..."):
+                try:
+                    diagnosis = st.session_state.pipeline.diagnose_retrieval(
+                        diagnostic_query,
+                        k=chunks_k
+                    )
+                    
+                    # Store in session state to display in main area
+                    st.session_state.diagnostic_results = diagnosis
+                    st.success("✅ Diagnostic complete! See results below.")
+                    
+                except Exception as e:
+                    st.error(f"❌ Diagnostic failed: {str(e)}")
+                    st.exception(e)
+        
+        elif run_diagnostic and not diagnostic_query:
+            st.warning("⚠️ Please enter a query to diagnose")
+
+    st.markdown("---")
+
+    # === CREDIBILITY CHECK SECTION ===
     st.markdown(
         '<span title="Check claims from other sources by verifying them against the indexed thyroid cancer papers.">'
-        "✅ Credibility Check"
+        "✅ **Credibility Check**"
         "</span>",
         unsafe_allow_html=True,
     )
@@ -64,6 +116,8 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
+        if "diagnostic_results" in st.session_state:
+            del st.session_state.diagnostic_results
         st.rerun()
 
 
@@ -77,6 +131,77 @@ if "disclaimer_shown" not in st.session_state:
         "</div>",
         unsafe_allow_html=True,
     )
+
+# === DISPLAY DIAGNOSTIC RESULTS (if available) ===
+if "diagnostic_results" in st.session_state:
+    diagnosis = st.session_state.diagnostic_results
+    
+    with st.container():
+        st.markdown("### 🔍 Diagnostic Results")
+        
+        # Summary
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"**Question:** {diagnosis['original_question']}")
+        with col2:
+            if st.button("❌ Close", key="close_diagnostic"):
+                del st.session_state.diagnostic_results
+                st.rerun()
+        
+        # Sub-queries generated
+        st.markdown("**Generated Sub-Queries:**")
+        for i, sq in enumerate(diagnosis["sub_queries_generated"], 1):
+            st.markdown(f"{i}. `{sq}`")
+        
+        st.markdown("---")
+        
+        # Results for each sub-query
+        for idx, result in enumerate(diagnosis["retrieval_results"], 1):
+            with st.expander(
+                f"📊 Sub-Query {idx}: {result['query'][:80]}... ({result['chunks_found']} chunks found)",
+                expanded=(idx == 1)  # Expand first query by default
+            ):
+                if result['sample_chunks']:
+                    for chunk in result['sample_chunks']:
+                        # Chunk header
+                        st.markdown(
+                            f"**Rank {chunk['rank']}** | "
+                            f"<span class='diagnostic-score'>Score: {chunk['score']:.4f}</span>",
+                            unsafe_allow_html=True
+                        )
+                        
+                        # Metadata
+                        st.caption(
+                            f"📄 {chunk['title']} ({chunk['year']}) | "
+                            f"PMID: {chunk['pmid']} | "
+                            f"Evidence Level: {chunk['evidence_level']}"
+                        )
+                        
+                        # Text preview
+                        st.text_area(
+                            f"Text Preview (Rank {chunk['rank']})",
+                            value=chunk['text_preview'],
+                            height=120,
+                            disabled=True,
+                            key=f"diag_chunk_{idx}_{chunk['rank']}"
+                        )
+                        
+                        if chunk != result['sample_chunks'][-1]:
+                            st.markdown("---")
+                else:
+                    st.warning("⚠️ No chunks retrieved for this sub-query")
+        
+        # Download button
+        st.download_button(
+            label="📥 Download Full Diagnostic (JSON)",
+            data=json.dumps(diagnosis, indent=2),
+            file_name=f"diagnostic_rai_analysis.json",
+            mime="application/json",
+            help="Download complete diagnostic data for further analysis",
+            use_container_width=True
+        )
+        
+        st.markdown("---")
 
 # render chat history
 for msg in st.session_state.messages:
