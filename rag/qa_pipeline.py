@@ -49,23 +49,51 @@ class QAPipeline:
         Use LLM to intelligently expand the query into multiple sub-queries
         to capture different aspects (procedures, risks, outcomes, etc.)
         """
-        expansion_prompt = f"""You are a medical information retrieval assistant. Given a user's question about thyroid cancer, generate 2-4 related search queries that would help retrieve comprehensive information.
+        expansion_prompt = f"""You are a medical information retrieval assistant specialized in thyroid cancer. Given a user's question, generate 3-5 targeted search queries that will retrieve comprehensive information from medical literature.
 
-The sub-queries should cover different aspects such as:
-- Main procedures/treatments
-- Complications and risks
-- Outcomes and prognosis
-- Alternative approaches
-- Patient selection criteria
+IMPORTANT GUIDELINES:
+1. Include the original question
+2. Generate queries focusing on:
+   - Main topic (procedures, treatments, diagnoses)
+   - Complications, adverse effects, and risks (use terms: "complications", "adverse effects", "toxicity", "side effects", "morbidity", "mortality")
+   - Clinical outcomes and prognosis
+   - Patient selection and indications
+   - Alternative approaches or management strategies
 
-Original question: {question}
+3. Use specific medical terminology that would appear in research papers
+4. For complications/risks questions, use multiple clinical terms (e.g., "adverse events", "toxicity", "late effects", "sequelae")
 
-Generate 2-4 focused search queries as a JSON array. Each query should be a complete sentence or question.
+EXAMPLES:
 
-Example output format:
-["original query here", "complications and risks of [treatment]", "outcomes of [procedure]", "patient selection criteria for [treatment]"]
+Question: "What are the standard surgical options for differentiated thyroid cancer?"
+Queries: [
+  "standard surgical options differentiated thyroid cancer",
+  "complications risks thyroidectomy differentiated thyroid cancer",
+  "lobectomy versus total thyroidectomy outcomes",
+  "patient selection criteria thyroid surgery"
+]
 
-Return ONLY the JSON array, no other text:"""
+Question: "What are the complications of radioactive iodine therapy?"
+Queries: [
+  "complications radioactive iodine therapy thyroid cancer",
+  "adverse effects RAI treatment",
+  "toxicity side effects iodine-131 therapy",
+  "late effects radioiodine ablation",
+  "salivary gland dysfunction xerostomia RAI"
+]
+
+Question: "How is papillary thyroid cancer diagnosed?"
+Queries: [
+  "diagnosis papillary thyroid cancer",
+  "fine needle aspiration biopsy thyroid",
+  "imaging ultrasound papillary thyroid carcinoma",
+  "molecular markers BRAF papillary thyroid cancer"
+]
+
+NOW GENERATE QUERIES FOR THIS QUESTION:
+{question}
+
+Return ONLY a JSON array of 3-5 search queries, no other text:"""
 
         try:
             logger.info("Expanding query with LLM...")
@@ -85,19 +113,118 @@ Return ONLY the JSON array, no other text:"""
                 # Ensure original question is included
                 if question not in queries:
                     queries.insert(0, question)
+                
+                # Add fallback specific queries for common topics
+                queries = self._add_fallback_queries(question, queries)
+                
                 logger.info(f"Expanded into {len(queries)} queries: {queries}")
                 return queries
             else:
-                logger.warning("LLM returned invalid query expansion, using original")
-                return [question]
+                logger.warning("LLM returned invalid query expansion, using fallback")
+                return self._create_fallback_queries(question)
                 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LLM query expansion JSON: {e}")
             logger.error(f"LLM response was: {response}")
-            return [question]
+            return self._create_fallback_queries(question)
         except Exception as e:
             logger.error(f"Error during query expansion: {e}")
-            return [question]
+            return self._create_fallback_queries(question)
+
+    def _add_fallback_queries(self, original_question: str, existing_queries: List[str]) -> List[str]:
+        """
+        Add domain-specific fallback queries based on keywords in the question.
+        Ensures we search for complications/risks even if LLM doesn't generate them.
+        """
+        q_lower = original_question.lower()
+        additional = []
+        
+        # If asking about complications/risks/side effects
+        if any(word in q_lower for word in ['complication', 'risk', 'side effect', 'adverse', 'toxicity']):
+            # Add multiple variations
+            topic = self._extract_topic(original_question)
+            if topic:
+                additional.extend([
+                    f"adverse effects {topic}",
+                    f"toxicity {topic}",
+                    f"late complications {topic}",
+                    f"morbidity mortality {topic}",
+                ])
+        
+        # If asking about treatment/surgery but NOT explicitly about complications
+        elif any(word in q_lower for word in ['treatment', 'therapy', 'surgical', 'surgery', 'procedure']):
+            topic = self._extract_topic(original_question)
+            if topic and not any('complication' in q.lower() or 'risk' in q.lower() for q in existing_queries):
+                additional.extend([
+                    f"complications {topic}",
+                    f"adverse effects {topic}",
+                ])
+        
+        # If asking about radioactive iodine specifically
+        if any(term in q_lower for term in ['radioactive iodine', 'rai', 'i-131', 'iodine-131', 'radioiodine']):
+            additional.extend([
+                "salivary gland dysfunction radioactive iodine",
+                "xerostomia RAI therapy",
+                "secondary malignancy radioiodine",
+                "bone marrow suppression iodine-131",
+            ])
+        
+        # Deduplicate and add
+        for query in additional:
+            if query not in existing_queries:
+                existing_queries.append(query)
+        
+        return existing_queries
+
+    def _extract_topic(self, question: str) -> Optional[str]:
+        """Extract the main medical topic from the question."""
+        q_lower = question.lower()
+        
+        # Common patterns
+        patterns = [
+            r'(?:of|for)\s+(.+?)(?:\?|$)',  # "complications of X" or "treatment for X"
+            r'(?:what|how)\s+(?:is|are)\s+(.+?)(?:\?|treated|diagnosed)',  # "What is X" or "How is X treated"
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, q_lower)
+            if match:
+                topic = match.group(1).strip()
+                # Clean up
+                topic = re.sub(r'\s+(in|for|with)\s+thyroid.*', ' thyroid', topic)
+                return topic
+        
+        return None
+
+    def _create_fallback_queries(self, question: str) -> List[str]:
+        """
+        Create rule-based fallback queries when LLM expansion fails.
+        """
+        q_lower = question.lower()
+        queries = [question]  # Always include original
+        
+        # Detect question type and add relevant queries
+        if any(word in q_lower for word in ['complication', 'risk', 'adverse', 'side effect']):
+            topic = self._extract_topic(question) or "thyroid cancer treatment"
+            queries.extend([
+                f"complications {topic}",
+                f"adverse effects {topic}",
+                f"toxicity {topic}",
+            ])
+        elif any(word in q_lower for word in ['surgical', 'surgery', 'procedure', 'operation']):
+            queries.extend([
+                f"{question.replace('?', '')} complications",
+                f"{question.replace('?', '')} risks",
+                "thyroidectomy complications adverse effects",
+            ])
+        elif any(word in q_lower for word in ['treatment', 'therapy', 'manage']):
+            queries.extend([
+                f"{question.replace('?', '')} outcomes",
+                f"{question.replace('?', '')} complications",
+            ])
+        
+        logger.info(f"Using fallback queries: {queries}")
+        return queries
 
     def _deduplicate_chunks(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -203,31 +330,31 @@ CRITICAL RULES:
 3. Do NOT mention confidence scores or evidence levels in the main answer
 4. Do NOT add information not present in the excerpts
 5. Write in clear, accessible language for patients
+6. If specific information (like complications or risks) is not found in the excerpts, clearly state "Information not available in current sources" for that section
 
 OUTPUT FORMAT (follow this structure exactly):
 
 **AI Overview**
 [Write 1-2 paragraph direct answer summarizing the key information]
 
-**[Main Topic Category - e.g., "Standard Surgical Options"]:**
-- **Option 1**: [Clear description]
-- **Option 2**: [Clear description]
-- **Option 3**: [Clear description]
+**[Main Topic Category - e.g., "Standard Surgical Options" or "Main Complications"]:**
+- **Item 1**: [Clear description]
+- **Item 2**: [Clear description]
+- **Item 3**: [Clear description]
 
-**Factors Influencing [Decision/Choice]:**
+**Factors Influencing [Decision/Risk]:**
 - **Factor 1**: [Explanation]
 - **Factor 2**: [Explanation]
-- **Factor 3**: [Explanation]
 
 **Alternative/Additional Considerations:**
 - [Point 1]
 - [Point 2]
 
-**Potential Risks:**
-- [Risk 1 with description]
-- [Risk 2 with description]
+**Potential Risks/Complications:**
+- [Risk/Complication 1 with description]
+- [Risk/Complication 2 with description]
 
-Note: Adapt the section headers based on what's relevant to the question. Not all sections are always needed. If information is not available in the excerpts for a section, you can omit that section or note "Information not specified in available sources."
+Note: Adapt the section headers based on what's relevant to the question. If a section has no information in the excerpts, write "Information not available in current sources" for that section.
 
 QUESTION: {question}
 
@@ -260,7 +387,7 @@ Now provide your answer following the format above:
         self, 
         question: str, 
         chat_history: Optional[list] = None, 
-        k: int = 25
+        k: int = 30  # Increased default for better coverage
     ) -> str:
         """
         Generate a Google-style overview answer to the question.
@@ -269,7 +396,7 @@ Now provide your answer following the format above:
         Args:
             question: User's question
             chat_history: Optional conversation history (not currently used)
-            k: Number of chunks to retrieve per sub-query
+            k: Total number of chunks to retrieve (distributed across sub-queries)
             
         Returns:
             Formatted answer with sources and evidence quality
@@ -279,7 +406,7 @@ Now provide your answer following the format above:
         
         # Step 2: Retrieve chunks for each sub-query
         all_retrieved = []
-        chunks_per_query = max(k // len(sub_queries), 10)  # At least 10 per query
+        chunks_per_query = max(k // len(sub_queries), 8)  # At least 8 per query
         
         for idx, sub_query in enumerate(sub_queries, 1):
             logger.info(f"Retrieving for sub-query {idx}/{len(sub_queries)}: {sub_query}")
