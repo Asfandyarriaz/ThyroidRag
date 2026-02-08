@@ -1,11 +1,13 @@
 # rag/qa_pipeline.py
 import os
 import re
+import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple  # Add Tuple here
+from typing import Any, Dict, List, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Evidence level definitions for confidence scoring
 EVIDENCE_LEVEL_WEIGHTS: Dict[int, Tuple[str, float]] = {
@@ -41,6 +43,82 @@ class QAPipeline:
         env = os.getenv("ENV", "local").lower()
         base = Path(__file__).parent if env == "prod" else Path(".")
         self.instructions = (base / instruction_file).read_text(encoding="utf-8")
+
+    def _expand_query_with_llm(self, question: str) -> List[str]:
+        """
+        Use LLM to intelligently expand the query into multiple sub-queries
+        to capture different aspects (procedures, risks, outcomes, etc.)
+        """
+        expansion_prompt = f"""You are a medical information retrieval assistant. Given a user's question about thyroid cancer, generate 2-4 related search queries that would help retrieve comprehensive information.
+
+The sub-queries should cover different aspects such as:
+- Main procedures/treatments
+- Complications and risks
+- Outcomes and prognosis
+- Alternative approaches
+- Patient selection criteria
+
+Original question: {question}
+
+Generate 2-4 focused search queries as a JSON array. Each query should be a complete sentence or question.
+
+Example output format:
+["original query here", "complications and risks of [treatment]", "outcomes of [procedure]", "patient selection criteria for [treatment]"]
+
+Return ONLY the JSON array, no other text:"""
+
+        try:
+            logger.info("Expanding query with LLM...")
+            response = self.llm.ask(expansion_prompt)
+            
+            # Clean up response (remove markdown code blocks if present)
+            cleaned = response.strip()
+            if cleaned.startswith("```"):
+                # Remove ```json and ``` markers
+                cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned)
+                cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+            
+            # Parse JSON
+            queries = json.loads(cleaned)
+            
+            if isinstance(queries, list) and len(queries) > 0:
+                # Ensure original question is included
+                if question not in queries:
+                    queries.insert(0, question)
+                logger.info(f"Expanded into {len(queries)} queries: {queries}")
+                return queries
+            else:
+                logger.warning("LLM returned invalid query expansion, using original")
+                return [question]
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM query expansion JSON: {e}")
+            logger.error(f"LLM response was: {response}")
+            return [question]
+        except Exception as e:
+            logger.error(f"Error during query expansion: {e}")
+            return [question]
+
+    def _deduplicate_chunks(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Remove duplicate chunks based on text content and source.
+        Uses first 200 characters of text for similarity detection.
+        """
+        seen = set()
+        unique = []
+        
+        for chunk in chunks:
+            # Create unique identifier from PMID + text snippet
+            text_snippet = chunk.get("text", "")[:200].strip()
+            pmid = chunk.get("pmid", "unknown")
+            chunk_id = f"{pmid}||{hash(text_snippet)}"
+            
+            if chunk_id not in seen:
+                seen.add(chunk_id)
+                unique.append(chunk)
+        
+        logger.info(f"Deduplicated {len(chunks)} chunks to {len(unique)} unique chunks")
+        return unique
 
     def _build_context(self, retrieved: List[Dict[str, Any]]) -> str:
         """Build context from retrieved chunks, grouped by source."""
@@ -146,10 +224,10 @@ OUTPUT FORMAT (follow this structure exactly):
 - [Point 2]
 
 **Potential Risks:**
-- [Risk 1]
-- [Risk 2]
+- [Risk 1 with description]
+- [Risk 2 with description]
 
-Note: Adapt the section headers based on what's relevant to the question. Not all sections are always needed.
+Note: Adapt the section headers based on what's relevant to the question. Not all sections are always needed. If information is not available in the excerpts for a section, you can omit that section or note "Information not specified in available sources."
 
 QUESTION: {question}
 
@@ -186,31 +264,46 @@ Now provide your answer following the format above:
     ) -> str:
         """
         Generate a Google-style overview answer to the question.
+        Uses LLM-powered query expansion for comprehensive retrieval.
         
         Args:
             question: User's question
             chat_history: Optional conversation history (not currently used)
-            k: Number of chunks to retrieve
+            k: Number of chunks to retrieve per sub-query
             
         Returns:
             Formatted answer with sources and evidence quality
         """
-        # Retrieve relevant chunks
-        retrieved = self.vector_store.search(question, k=k)
+        # Step 1: Expand query into multiple sub-queries using LLM
+        sub_queries = self._expand_query_with_llm(question)
         
-        if not retrieved:
+        # Step 2: Retrieve chunks for each sub-query
+        all_retrieved = []
+        chunks_per_query = max(k // len(sub_queries), 10)  # At least 10 per query
+        
+        for idx, sub_query in enumerate(sub_queries, 1):
+            logger.info(f"Retrieving for sub-query {idx}/{len(sub_queries)}: {sub_query}")
+            retrieved = self.vector_store.search(sub_query, k=chunks_per_query)
+            all_retrieved.extend(retrieved)
+            logger.info(f"  Retrieved {len(retrieved)} chunks")
+        
+        # Step 3: Deduplicate chunks
+        unique_retrieved = self._deduplicate_chunks(all_retrieved)
+        
+        if not unique_retrieved:
             return "I don't have enough information in my knowledge base to answer this question about thyroid cancer."
 
-        # Build context and compute confidence
-        context = self._build_context(retrieved)
-        confidence = self._compute_confidence(retrieved)
+        # Step 4: Build context and compute confidence
+        context = self._build_context(unique_retrieved)
+        confidence = self._compute_confidence(unique_retrieved)
 
-        # Generate answer
+        # Step 5: Generate answer
+        logger.info("Generating final answer with LLM...")
         prompt = self._create_prompt(question, context)
         answer = self.llm.ask(prompt).strip()
 
-        # Add evidence summary and sources
-        sources = self._extract_sources(retrieved)
+        # Step 6: Add evidence summary and sources
+        sources = self._extract_sources(unique_retrieved)
         
         result = f"""{answer}
 
