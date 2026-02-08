@@ -286,6 +286,41 @@ Return ONLY a JSON array of 3-5 search queries, no other text:"""
 
         return "".join(parts)
 
+    # Add this diagnostic method to your QAPipeline class
+
+def diagnose_retrieval(self, question: str) -> Dict[str, Any]:
+    """
+    Diagnostic tool to see what's actually being retrieved.
+    Returns detailed info about retrieved chunks.
+    """
+    sub_queries = self._expand_query_with_llm(question)
+    
+    diagnosis = {
+        "original_question": question,
+        "sub_queries": sub_queries,
+        "retrieval_results": []
+    }
+    
+    for sub_query in sub_queries:
+        chunks = self.vector_store.search(sub_query, k=10)
+        
+        result = {
+            "query": sub_query,
+            "chunks_found": len(chunks),
+            "sample_texts": []
+        }
+        
+        for chunk in chunks[:3]:  # Show first 3 chunks
+            result["sample_texts"].append({
+                "title": chunk.get("title"),
+                "year": chunk.get("year"),
+                "text_preview": chunk.get("text", "")[:300] + "..."
+            })
+        
+        diagnosis["retrieval_results"].append(result)
+    
+    return diagnosis
+
     def _compute_confidence(self, retrieved: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Calculate confidence based on evidence levels."""
         levels = [
