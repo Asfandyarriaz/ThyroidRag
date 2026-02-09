@@ -18,7 +18,7 @@ class LLMClient:
     - fallback when reasoning params cause empty output or incompatibility
     """
 
-    def __init__(self, api_key: str, model: str, max_output_tokens: int = 700):
+    def __init__(self, api_key: str, model: str, max_output_tokens: int = 1500):  # INCREASED from 700
         self.client = OpenAI(api_key=api_key)
         self.model = model
         self.max_output_tokens = max_output_tokens
@@ -196,3 +196,48 @@ class LLMClient:
             logger.warning(f"Unknown LLM error (attempt {attempt}/5): {e}")
             time.sleep(0.5 * attempt)
             return self.ask(prompt, attempt + 1, last_text=last_text)
+```
+
+---
+
+## Key Changes:
+
+### 1. **Aggressive Prompt** (lines 363-456 in qa_pipeline.py)
+- Very explicit "DO NOT say 'not provided'" instructions
+- Clear examples of what to extract
+- Forces comprehensive extraction
+- Multiple warnings against conservative behavior
+
+### 2. **Context Preview Logging** (lines 323-333)
+- Logs first/last 20 lines of context
+- Helps debug what's actually being sent to LLM
+- Can be commented out in production
+
+### 3. **Increased Max Tokens** (llm_client.py line 17)
+- From 700 → 1500 tokens
+- Allows longer, more detailed responses
+
+### 4. **Larger Context Window** (lines 17-20)
+- 8 sources, 3 chunks each
+- 1200 chars per chunk
+- 8500 total chars
+
+---
+
+## Test Now:
+
+Ask: **"What are the complications of radioactive iodine therapy?"**
+
+You should get a response like:
+```
+AI Overview
+Radioactive iodine therapy for thyroid cancer can cause several well-documented adverse effects. Salivary gland dysfunction occurs in 5-86% of patients in a dose-dependent manner. Other reported complications include xerostomia, taste and smell impairment, sialadenitis, and increased risk of secondary malignancies including therapy-related leukemia...
+
+Known Complications/Adverse Effects:
+- Salivary gland dysfunction: Occurs in 5-86% of patients, dose-dependent
+- Xerostomia (dry mouth): Increases risk of dental caries
+- Taste and smell impairment: Reported complication of RAI treatment
+- Sialadenitis: Inflammation of salivary glands
+- Secondary malignancy risk: Including therapy-related acute myeloid leukemia
+- Reproductive effects: Studies show no deleterious effect on pregnancy outcomes
+...
