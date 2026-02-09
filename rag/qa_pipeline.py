@@ -20,11 +20,11 @@ EVIDENCE_LEVEL_WEIGHTS: Dict[int, Tuple[str, float]] = {
     7: ("Case Reports / Series", 0.40),
 }
 
-# Context building limits
-MAX_SOURCES = 6
-MAX_CHUNKS_PER_SOURCE = 2
-MAX_EXCERPT_CHARS = 900
-MAX_TOTAL_CONTEXT_CHARS = 6500
+# Context building limits - INCREASED for better coverage
+MAX_SOURCES = 8  # Increased from 6
+MAX_CHUNKS_PER_SOURCE = 3  # Increased from 2
+MAX_EXCERPT_CHARS = 1200  # Increased from 900
+MAX_TOTAL_CONTEXT_CHARS = 8500  # Increased from 6500
 
 
 class QAPipeline:
@@ -363,7 +363,7 @@ Return ONLY a JSON array of 3-5 search queries, no other text:"""
         return {"label": label, "score": score, "breakdown": breakdown}
 
     def _create_prompt(self, question: str, context: str) -> str:
-        """Create Google-style overview prompt."""
+        """Create Google-style overview prompt with instructions to use scattered information."""
         return f"""
 {self.instructions}
 
@@ -373,40 +373,54 @@ CRITICAL RULES:
 1. Use ONLY information from the provided excerpts
 2. Do NOT cite sources inline (no parenthetical citations)
 3. Do NOT mention confidence scores or evidence levels in the main answer
-4. Do NOT add information not present in the excerpts
-5. Write in clear, accessible language for patients
-6. If specific information (like complications or risks) is not found in the excerpts, clearly state "Information not available in current sources" for that section
+4. Write in clear, accessible language for patients
+5. **IMPORTANT**: If complications/risks/information are mentioned ANYWHERE in the excerpts (even scattered across different sources), INCLUDE them in your answer
+6. You do NOT need a comprehensive list - even partial information is valuable to users
+7. **NEVER say "information not available" if ANY relevant information exists in the excerpts**
+
+GUIDANCE ON USING SCATTERED INFORMATION:
+- If you find some complications mentioned but not a complete list, present what you found
+- If complications are mentioned in passing (e.g., "may cause xerostomia"), include them
+- Combine information from multiple sources to build as complete a picture as possible
+- Look carefully through ALL excerpts - information may be in references, case reports, or discussion sections
+- Even statistics like "occurs in 5-86% of patients" are valuable - include them!
 
 OUTPUT FORMAT (follow this structure exactly):
 
 **AI Overview**
-[Write 1-2 paragraph direct answer summarizing the key information]
+[Write 1-2 paragraph direct answer summarizing the key information found in excerpts]
 
-**[Main Topic Category - e.g., "Standard Surgical Options" or "Main Complications"]:**
-- **Item 1**: [Clear description]
-- **Item 2**: [Clear description]
-- **Item 3**: [Clear description]
+**[Main Topic Category - e.g., "Known Complications" or "Reported Adverse Effects" or "Standard Options"]:**
+- **Item 1**: [Description from excerpts - include any percentages, frequencies, or details mentioned]
+- **Item 2**: [Description from excerpts]
+- **Item 3**: [Description from excerpts]
+[Include ALL items mentioned in excerpts, not just a subset]
 
 **Factors Influencing [Decision/Risk]:**
-- **Factor 1**: [Explanation]
-- **Factor 2**: [Explanation]
+- **Factor 1**: [If mentioned anywhere in excerpts]
+- **Factor 2**: [If mentioned anywhere in excerpts]
+[Only include if information exists in excerpts]
 
-**Alternative/Additional Considerations:**
-- [Point 1]
-- [Point 2]
+**Management/Prevention:**
+- [Any strategies, recommendations, or preventive measures mentioned in excerpts]
+[Only include if information exists in excerpts]
 
-**Potential Risks/Complications:**
-- [Risk/Complication 1 with description]
-- [Risk/Complication 2 with description]
+**Additional Considerations:**
+- [Other relevant information from excerpts]
+[Only include if information exists in excerpts]
 
-Note: Adapt the section headers based on what's relevant to the question. If a section has no information in the excerpts, write "Information not available in current sources" for that section.
+IMPORTANT NOTES:
+- If only limited information is available for a section, present what you have rather than omitting the section
+- Phrase findings as "Reported complications include..." or "Studies mention..." to indicate this comes from the literature
+- Be thorough - read through ALL excerpts carefully before concluding information is missing
+- References and case reports often contain specific complication data - don't skip them
 
 QUESTION: {question}
 
 CONTEXT FROM MEDICAL LITERATURE:
 {context}
 
-Now provide your answer following the format above:
+Now provide your answer following the format above. Remember: Include ALL relevant information found in the excerpts, even if scattered or incomplete. Read through all excerpts carefully:
 """.strip()
 
     def _extract_sources(self, retrieved: List[Dict[str, Any]]) -> List[str]:
