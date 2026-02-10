@@ -20,11 +20,11 @@ EVIDENCE_LEVEL_WEIGHTS: Dict[int, Tuple[str, float]] = {
     7: ("Case Reports / Series", 0.40),
 }
 
-# Context building limits - INCREASED for better coverage
-MAX_SOURCES = 8  # Increased from 6
-MAX_CHUNKS_PER_SOURCE = 3  # Increased from 2
-MAX_EXCERPT_CHARS = 1200  # Increased from 900
-MAX_TOTAL_CONTEXT_CHARS = 8500  # Increased from 6500
+# Context building limits
+MAX_SOURCES = 8
+MAX_CHUNKS_PER_SOURCE = 3
+MAX_EXCERPT_CHARS = 1200
+MAX_TOTAL_CONTEXT_CHARS = 8500
 
 
 class QAPipeline:
@@ -43,6 +43,212 @@ class QAPipeline:
         env = os.getenv("ENV", "local").lower()
         base = Path(__file__).parent if env == "prod" else Path(".")
         self.instructions = (base / instruction_file).read_text(encoding="utf-8")
+
+    def _get_few_shot_examples(self) -> str:
+        """
+        Return curated examples of high-quality answers for different question types.
+        These teach the LLM how to adapt its format to the question.
+        """
+        return """
+=== EXAMPLE 1: DEFINITION QUESTION ===
+
+Question: "What is thyroid cancer?"
+
+Answer:
+**AI Overview**
+Thyroid cancer is a malignancy that develops in the thyroid gland, a butterfly-shaped organ at the base of the neck that produces hormones regulating metabolism. It's the most common endocrine cancer, typically affecting women between ages 30-60. Most thyroid cancers are slow-growing and highly treatable, with excellent survival rates. The disease often presents as a painless neck lump.
+
+**Types of Thyroid Cancer:**
+- **Papillary thyroid carcinoma (PTC)**: The most common type (80% of cases), usually slow-growing with excellent prognosis
+- **Follicular thyroid carcinoma**: Second most common, generally slow-growing
+- **Medullary thyroid carcinoma (MTC)**: Arises from parafollicular C cells, can be hereditary
+- **Anaplastic thyroid carcinoma**: Rare, aggressive, and fast-growing
+
+**Common Symptoms:**
+- Painless lump or nodule in the neck
+- Hoarseness or voice changes
+- Difficulty swallowing
+- Neck or throat pain
+- Swollen lymph nodes
+
+**Risk Factors:**
+- Radiation exposure, especially during childhood
+- Family history of thyroid cancer or genetic syndromes
+- Female gender
+- Age 30-60 years
+
+**Diagnosis and Treatment:**
+Diagnosis typically involves thyroid ultrasound and fine needle aspiration biopsy. Treatment usually includes surgical removal (thyroidectomy), often followed by radioactive iodine therapy for certain types. The overall prognosis is excellent, with 5-year survival rates exceeding 98% for most types.
+
+=== EXAMPLE 2: COMPLICATIONS QUESTION ===
+
+Question: "What are the complications of total thyroidectomy?"
+
+Answer:
+**AI Overview**
+Total thyroidectomy, while generally safe, carries several potential complications. The most common include temporary or permanent hypoparathyroidism (affecting calcium levels), recurrent laryngeal nerve injury (causing voice changes), and bleeding. Complication rates vary by surgeon experience and patient factors, with most issues being temporary.
+
+**Major Complications:**
+- **Hypoparathyroidism**: Temporary in 20-30% of patients, permanent in 1-3%; causes low calcium levels requiring supplementation
+- **Recurrent laryngeal nerve injury**: Temporary in 5-10%, permanent in 1-2%; leads to hoarseness and vocal cord paralysis
+- **Bleeding/hematoma**: Occurs in 1-2% of cases, may require emergency surgery if compresses airway
+- **Hypothyroidism**: Expected outcome requiring lifelong thyroid hormone replacement
+
+**Less Common Complications:**
+- Superior laryngeal nerve injury (affects voice pitch)
+- Wound infection (1-2%)
+- Seroma formation
+- Keloid scarring
+
+**Risk Factors:**
+- Extent of surgery (total vs. partial thyroidectomy)
+- Surgeon experience and volume
+- Revision surgery (higher risk than primary surgery)
+- Extent of lymph node dissection
+
+**Prevention and Management:**
+Most complications are managed medically. Calcium and vitamin D supplementation prevents symptomatic hypocalcemia. Voice therapy helps with nerve injury recovery. Lifelong thyroid hormone replacement is standard after total thyroidectomy.
+
+=== EXAMPLE 3: PROCEDURE OPTIONS QUESTION ===
+
+Question: "What are the surgical options for differentiated thyroid cancer?"
+
+Answer:
+**AI Overview**
+Surgical options for differentiated thyroid cancer include lobectomy (removing one thyroid lobe) or total thyroidectomy (removing the entire gland). The choice depends on tumor size, aggressiveness, and patient factors. For small, low-risk tumors (<1-2 cm), lobectomy may suffice. Larger tumors (>4 cm) or those with high-risk features typically require total thyroidectomy.
+
+**Standard Surgical Options:**
+- **Lobectomy (hemithyroidectomy)**: Removal of one thyroid lobe and isthmus; suitable for small (<1 cm), low-risk, unifocal tumors with no extrathyroidal extension
+- **Total thyroidectomy**: Removal of entire thyroid gland; recommended for tumors >4 cm, bilateral disease, extrathyroidal extension, or lymph node metastases
+- **Near-total thyroidectomy**: Removes most thyroid tissue while preserving small amount near parathyroids/recurrent laryngeal nerve
+
+**Lymph Node Management:**
+- **Central neck dissection**: Removal of lymph nodes between carotid arteries; performed if nodes are clinically involved
+- **Lateral neck dissection**: Removal of side neck nodes if imaging shows metastases
+
+**Factors Influencing Surgical Choice:**
+- Tumor size: <1 cm may allow lobectomy; >4 cm requires total thyroidectomy
+- Extent of disease: Bilateral, multifocal, or extrathyroidal extension favors total thyroidectomy
+- Lymph node status: Positive nodes increase extent of surgery
+- Patient age and comorbidities
+- Patient preference and desire to avoid lifelong medication
+
+**Newer Approaches:**
+- Minimally invasive thyroidectomy (smaller incisions)
+- Robotic-assisted surgery (transaxillary or transoral approaches) for cosmetic benefit
+
+=== EXAMPLE 4: COMPARISON QUESTION ===
+
+Question: "What's the difference between lobectomy and total thyroidectomy?"
+
+Answer:
+**AI Overview**
+Lobectomy removes one thyroid lobe while total thyroidectomy removes the entire gland. The choice depends on cancer size, spread, and patient factors. Lobectomy is less invasive with fewer complications but limits radioactive iodine treatment options. Total thyroidectomy allows for comprehensive cancer treatment but requires lifelong hormone replacement.
+
+**Key Differences:**
+
+| Aspect | Lobectomy | Total Thyroidectomy |
+|--------|-----------|---------------------|
+| Extent | One lobe + isthmus | Entire gland |
+| Best for | Small (<2 cm), low-risk, unifocal tumors | Larger tumors, bilateral disease, high-risk features |
+| Hormone replacement | Often not needed (50% of patients) | Always required (lifelong) |
+| Complication risk | Lower (1-2% permanent complications) | Higher (2-5% permanent complications) |
+| Follow-up | Ultrasound surveillance | Thyroglobulin monitoring + RAI option |
+| Reoperation risk | 5-10% may need completion thyroidectomy | None |
+
+**Advantages of Lobectomy:**
+- Preserves thyroid function in ~50% of patients
+- Lower complication rates
+- No lifelong medication for many patients
+- Shorter surgery time
+
+**Advantages of Total Thyroidectomy:**
+- More complete cancer removal
+- Enables radioactive iodine treatment
+- Better long-term monitoring with thyroglobulin
+- No risk of needing second surgery
+- Lower recurrence rates for larger tumors
+
+**When Each is Recommended:**
+Lobectomy is appropriate for tumors <2 cm with no concerning features, no lymph node involvement, and no family history. Total thyroidectomy is recommended for tumors >4 cm, bilateral disease, lymph node metastases, or aggressive variants.
+
+=== EXAMPLE 5: DIAGNOSTIC QUESTION ===
+
+Question: "How is papillary thyroid cancer diagnosed?"
+
+Answer:
+**AI Overview**
+Papillary thyroid cancer is diagnosed through a combination of thyroid ultrasound and fine needle aspiration (FNA) biopsy. The process typically begins when a thyroid nodule is discovered during physical exam or imaging. Ultrasound evaluates suspicious features, and FNA provides cellular diagnosis. Molecular testing may be added for indeterminate results.
+
+**Diagnostic Pathway:**
+
+**1. Initial Detection:**
+- Physical examination (palpable neck mass)
+- Incidental finding on imaging (CT, MRI, PET scan)
+- Thyroid function tests are typically normal
+
+**2. Thyroid Ultrasound:**
+- Evaluates nodule characteristics: size, composition, margins, echogenicity
+- TI-RADS scoring system classifies nodules by suspicion level
+- Suspicious features: hypoechoic, irregular margins, microcalcifications, taller-than-wide shape
+- Assesses lymph nodes for metastases
+
+**3. Fine Needle Aspiration (FNA) Biopsy:**
+- Performed on nodules ≥1 cm with suspicious features or smaller if high-risk
+- Ultrasound-guided for accuracy
+- Results reported using Bethesda classification system (I-VI)
+- Bethesda VI = malignant (papillary thyroid carcinoma diagnosed)
+
+**4. Molecular Testing:**
+- Used for indeterminate FNA results (Bethesda III-IV)
+- Tests for BRAF, RAS, RET/PTC mutations
+- Helps determine if surgery is needed
+- ThyroSeq, Afirma gene expression classifier
+
+**5. Additional Imaging:**
+- Neck CT or MRI if extensive disease suspected
+- Chest imaging if lung metastases possible
+- PET scan rarely needed
+
+**Diagnostic Accuracy:**
+FNA has 95% sensitivity and specificity when performed by experienced operators. Molecular testing further improves accuracy for indeterminate cases.
+
+=== EXAMPLE 6: TREATMENT QUESTION ===
+
+Question: "How is medullary thyroid cancer treated?"
+
+Answer:
+**AI Overview**
+Medullary thyroid cancer (MTC) is treated primarily with surgery, as it doesn't respond to radioactive iodine. Treatment involves total thyroidectomy with central neck lymph node dissection. Genetic testing for RET mutations is essential since 25% of cases are hereditary. Advanced disease may require targeted therapy with tyrosine kinase inhibitors.
+
+**Primary Treatment:**
+- **Total thyroidectomy**: Always required; MTC is often bilateral
+- **Central neck dissection**: Routinely performed even without obvious lymph node involvement
+- **Lateral neck dissection**: If imaging shows lateral compartment metastases
+
+**Genetic Evaluation:**
+- RET proto-oncogene testing in all MTC patients
+- Identifies hereditary MTC (MEN 2A, MEN 2B, familial MTC)
+- Family screening if hereditary form detected
+- Prophylactic thyroidectomy for at-risk family members
+
+**Post-Surgical Monitoring:**
+- Calcitonin and CEA tumor markers
+- Doubling time predicts prognosis
+- Imaging (ultrasound, CT, MRI) for structural disease
+- No role for radioactive iodine (MTC cells don't take up iodine)
+
+**Advanced Disease Treatment:**
+- **Vandetanib**: FDA-approved for progressive, symptomatic, or metastatic MTC
+- **Cabozantinib**: Another approved tyrosine kinase inhibitor
+- External beam radiation for unresectable local disease
+- Liver-directed therapies for liver metastases
+
+**Prognosis:**
+10-year survival is 75-85% for localized disease, 40% for lymph node metastases, and 20% for distant metastases. Calcitonin doubling time <2 years indicates aggressive disease.
+
+=== END OF EXAMPLES ===
+"""
 
     def diagnose_retrieval(self, question: str, k: int = 10) -> Dict[str, Any]:
         """
@@ -331,6 +537,17 @@ Return ONLY a JSON array of 3-5 search queries, no other text:"""
 
         return "".join(parts)
 
+    def _log_context_preview(self, context: str) -> None:
+        """Log first and last parts of context for debugging."""
+        lines = context.split('\n')
+        preview_lines = 15
+        
+        logger.info("=== CONTEXT PREVIEW (First 15 lines) ===")
+        for line in lines[:preview_lines]:
+            logger.info(line)
+        logger.info("...")
+        logger.info(f"=== Total context lines: {len(lines)} ===")
+
     def _compute_confidence(self, retrieved: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Calculate confidence based on evidence levels."""
         levels = [
@@ -363,64 +580,60 @@ Return ONLY a JSON array of 3-5 search queries, no other text:"""
         return {"label": label, "score": score, "breakdown": breakdown}
 
     def _create_prompt(self, question: str, context: str) -> str:
-        """Create Google-style overview prompt with instructions to use scattered information."""
+        """
+        Create adaptive prompt with few-shot examples teaching the LLM different formats.
+        """
+        few_shot_examples = self._get_few_shot_examples()
+        
         return f"""
 {self.instructions}
 
-You are a medical information assistant specialized in thyroid cancer. Your task is to provide clear, patient-friendly answers in the style of Google's AI Overview.
+You are a medical information assistant specialized in thyroid cancer. Your task is to provide answers in the style of Google's AI Overview, adapting your format to match the type of question being asked.
 
-CRITICAL RULES:
-1. Use ONLY information from the provided excerpts
-2. Do NOT cite sources inline (no parenthetical citations)
-3. Do NOT mention confidence scores or evidence levels in the main answer
-4. Write in clear, accessible language for patients
-5. **IMPORTANT**: If complications/risks/information are mentioned ANYWHERE in the excerpts (even scattered across different sources), INCLUDE them in your answer
-6. You do NOT need a comprehensive list - even partial information is valuable to users
-7. **NEVER say "information not available" if ANY relevant information exists in the excerpts**
+=== LEARNING FROM EXAMPLES ===
 
-GUIDANCE ON USING SCATTERED INFORMATION:
-- If you find some complications mentioned but not a complete list, present what you found
-- If complications are mentioned in passing (e.g., "may cause xerostomia"), include them
-- Combine information from multiple sources to build as complete a picture as possible
-- Look carefully through ALL excerpts - information may be in references, case reports, or discussion sections
-- Even statistics like "occurs in 5-86% of patients" are valuable - include them!
+Study these examples carefully. Notice how the format adapts to the question type:
+- Definition questions get overview + types + symptoms + diagnosis
+- Complications questions focus on adverse effects + risk factors + prevention
+- Procedure questions list options + selection criteria + outcomes
+- Comparison questions use side-by-side analysis
+- Diagnostic questions follow the diagnostic pathway
+- Treatment questions cover primary treatment + monitoring + advanced options
 
-OUTPUT FORMAT (follow this structure exactly):
+{few_shot_examples}
 
-**AI Overview**
-[Write 1-2 paragraph direct answer summarizing the key information found in excerpts]
+=== YOUR TASK ===
 
-**[Main Topic Category - e.g., "Known Complications" or "Reported Adverse Effects" or "Standard Options"]:**
-- **Item 1**: [Description from excerpts - include any percentages, frequencies, or details mentioned]
-- **Item 2**: [Description from excerpts]
-- **Item 3**: [Description from excerpts]
-[Include ALL items mentioned in excerpts, not just a subset]
+Now answer the user's question using ONLY the information in the excerpts below. Follow these principles:
 
-**Factors Influencing [Decision/Risk]:**
-- **Factor 1**: [If mentioned anywhere in excerpts]
-- **Factor 2**: [If mentioned anywhere in excerpts]
-[Only include if information exists in excerpts]
+**Critical Rules:**
+1. **Adapt your format** to match the question type (like the examples above)
+2. **Use ONLY information from the excerpts** - never add external knowledge
+3. **Extract everything relevant** - if mentioned even once, include it
+4. **No inline citations** - write naturally without (Author, Year) references
+5. **Be comprehensive** - include percentages, statistics, specific details when available
+6. **Natural organization** - use section headers that fit the question, not rigid templates
 
-**Management/Prevention:**
-- [Any strategies, recommendations, or preventive measures mentioned in excerpts]
-[Only include if information exists in excerpts]
+**Format Flexibility:**
+- Start with "AI Overview" (1-2 paragraph summary)
+- Use **bold headers** that match the question (not generic labels)
+- Organize content logically for THIS specific question
+- Include tables for comparisons if helpful
+- Omit sections that aren't relevant to this question
 
-**Additional Considerations:**
-- [Other relevant information from excerpts]
-[Only include if information exists in excerpts]
-
-IMPORTANT NOTES:
-- If only limited information is available for a section, present what you have rather than omitting the section
-- Phrase findings as "Reported complications include..." or "Studies mention..." to indicate this comes from the literature
-- Be thorough - read through ALL excerpts carefully before concluding information is missing
-- References and case reports often contain specific complication data - don't skip them
+**Extraction Guidelines:**
+- Read ALL excerpts carefully before writing
+- Look for information in results, references, case reports, and discussions
+- Include specific data: percentages, frequencies, measurements
+- Combine information from multiple sources
+- If data is limited, say what you found (not what's missing)
 
 QUESTION: {question}
 
 CONTEXT FROM MEDICAL LITERATURE:
 {context}
 
-Now provide your answer following the format above. Remember: Include ALL relevant information found in the excerpts, even if scattered or incomplete. Read through all excerpts carefully:
+Now provide your answer, adapting the format to best suit this question:
 """.strip()
 
     def _extract_sources(self, retrieved: List[Dict[str, Any]]) -> List[str]:
@@ -481,10 +694,14 @@ Now provide your answer following the format above. Remember: Include ALL releva
 
         # Step 4: Build context and compute confidence
         context = self._build_context(unique_retrieved)
+        
+        # Log context preview for debugging (comment out in production if needed)
+        # self._log_context_preview(context)
+        
         confidence = self._compute_confidence(unique_retrieved)
 
-        # Step 5: Generate answer
-        logger.info("Generating final answer with LLM...")
+        # Step 5: Generate answer using few-shot learning
+        logger.info("Generating final answer with few-shot learning...")
         prompt = self._create_prompt(question, context)
         answer = self.llm.ask(prompt).strip()
 
