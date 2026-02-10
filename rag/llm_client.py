@@ -18,7 +18,7 @@ class LLMClient:
     - fallback when reasoning params cause empty output or incompatibility
     """
 
-    def __init__(self, api_key: str, model: str, max_output_tokens: int = 2000):  # INCREASED from 700 to 2000
+    def __init__(self, api_key: str, model: str, max_output_tokens: int = 2500):  # Increased for JSON
         self.client = OpenAI(api_key=api_key)
         self.model = model
         self.max_output_tokens = max_output_tokens
