@@ -5,6 +5,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from sentence_transformers import CrossEncoder
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,11 +21,13 @@ EVIDENCE_LEVEL_WEIGHTS: Dict[int, Tuple[str, float]] = {
     7: ("Case Reports / Series", 0.40),
 }
 
-# Context building limits
-MAX_SOURCES = 10  # Increased for better source coverage
+# Retrieval configuration
+FIRST_STAGE_RETRIEVAL = 100  # Bi-encoder retrieval (broad)
+SECOND_STAGE_TOP_K = 20      # Cross-encoder re-ranking (precise)
+MAX_SOURCES = 10
 MAX_CHUNKS_PER_SOURCE = 3
 MAX_EXCERPT_CHARS = 1200
-MAX_TOTAL_CONTEXT_CHARS = 10000  # Increased for source tagging
+MAX_TOTAL_CONTEXT_CHARS = 10000
 
 
 class QAPipeline:
@@ -34,6 +37,7 @@ class QAPipeline:
         vector_store: Any,
         llm_client: Any,
         instruction_file: str = "instructions/rag_instructions.txt",
+        cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
     ):
         self.embedder = embedder
         self.vector_store = vector_store
@@ -43,6 +47,11 @@ class QAPipeline:
         env = os.getenv("ENV", "local").lower()
         base = Path(__file__).parent if env == "prod" else Path(".")
         self.instructions = (base / instruction_file).read_text(encoding="utf-8")
+
+        # Initialize cross-encoder for re-ranking
+        logger.info(f"Loading cross-encoder model: {cross_encoder_model}")
+        self.cross_encoder = CrossEncoder(cross_encoder_model)
+        logger.info("Cross-encoder loaded successfully")
 
     def _classify_question_type(self, question: str) -> str:
         """
@@ -76,6 +85,73 @@ Return ONLY the category name (one word), nothing else:"""
         except Exception as e:
             logger.error(f"Error classifying question: {e}")
             return "definition"  # Default fallback
+
+    def _rerank_with_cross_encoder(
+        self, 
+        question: str, 
+        chunks: List[Dict[str, Any]], 
+        top_k: int = SECOND_STAGE_TOP_K
+    ) -> List[Dict[str, Any]]:
+        """
+        Re-rank chunks using cross-encoder for better relevance.
+        
+        Args:
+            question: The user's question
+            chunks: List of candidate chunks from bi-encoder
+            top_k: Number of top chunks to return after re-ranking
+            
+        Returns:
+            Re-ranked list of chunks with updated scores
+        """
+        if not chunks:
+            return []
+        
+        logger.info(f"Re-ranking {len(chunks)} chunks with cross-encoder...")
+        
+        # Prepare (question, document) pairs
+        pairs = []
+        for chunk in chunks:
+            # Combine title and text for better context
+            doc_text = chunk.get("text", "")
+            title = chunk.get("title", "")
+            
+            # Create document representation
+            if title and title not in doc_text:
+                combined = f"{title}. {doc_text}"
+            else:
+                combined = doc_text
+            
+            # Truncate if too long (cross-encoder usually has ~512 token limit)
+            combined = combined[:2000]  # roughly ~500 tokens
+            pairs.append([question, combined])
+        
+        # Score all pairs
+        scores = self.cross_encoder.predict(pairs)
+        
+        # Replace bi-encoder scores with cross-encoder scores
+        for idx, chunk in enumerate(chunks):
+            chunk["score"] = float(scores[idx])
+        
+        # Sort by cross-encoder score (descending)
+        reranked = sorted(chunks, key=lambda x: x.get("score", 0), reverse=True)
+        
+        # Take top_k
+        top_chunks = reranked[:top_k]
+        
+        logger.info(
+            f"Re-ranking complete: "
+            f"Top score={top_chunks[0]['score']:.4f}, "
+            f"Bottom score={top_chunks[-1]['score']:.4f}"
+        )
+        
+        # Log top 3 for debugging
+        for i, chunk in enumerate(top_chunks[:3], 1):
+            logger.info(
+                f"  Rank {i}: score={chunk['score']:.4f}, "
+                f"title='{chunk.get('title', 'N/A')[:60]}...'"
+            )
+        
+        return top_chunks
 
     def diagnose_retrieval(self, question: str, k: int = 10) -> Dict[str, Any]:
         """
@@ -313,6 +389,7 @@ Return ONLY a JSON array of 3-5 search queries, no other text:"""
                 "year": meta.get("year", "Unknown"),
                 "pmid": meta.get("pmid", "Unknown"),
                 "evidence_level": meta.get("evidence_level", "Unknown"),
+                "cross_encoder_score": meta.get("score", 0.0),  # Add cross-encoder score
             }
             
             # Add tagged excerpts
@@ -613,6 +690,7 @@ Return ONLY valid JSON, no other text:"""
     ) -> Dict[str, Any]:
         """
         Generate answer as structured JSON with source tracking.
+        NOW WITH CROSS-ENCODER RE-RANKING!
         
         Returns:
             Dict with 'json_response', 'sources', 'confidence' keys
@@ -623,14 +701,17 @@ Return ONLY valid JSON, no other text:"""
         # Step 2: Expand query
         sub_queries = self._expand_query_with_llm(question)
         
-        # Step 3: Retrieve chunks
+        # Step 3: First-stage retrieval (bi-encoder) - retrieve MORE candidates
+        logger.info(f"=== FIRST STAGE: Bi-encoder retrieval ===")
         all_retrieved = []
-        chunks_per_query = max(k // len(sub_queries), 8)
+        chunks_per_query = FIRST_STAGE_RETRIEVAL // len(sub_queries)
         
         for idx, sub_query in enumerate(sub_queries, 1):
             logger.info(f"Retrieving for sub-query {idx}/{len(sub_queries)}: {sub_query}")
             retrieved = self.vector_store.search(sub_query, k=chunks_per_query)
             all_retrieved.extend(retrieved)
+        
+        logger.info(f"First stage retrieved {len(all_retrieved)} chunks")
         
         # Step 4: Deduplicate
         unique_retrieved = self._deduplicate_chunks(all_retrieved)
@@ -643,13 +724,23 @@ Return ONLY valid JSON, no other text:"""
                 "confidence": {"label": "Low", "score": 0, "breakdown": "No data"}
             }
 
-        # Step 5: Build tagged context
-        context, source_map = self._build_tagged_context(unique_retrieved)
+        # Step 5: Second-stage re-ranking (cross-encoder) - get BEST chunks
+        logger.info(f"=== SECOND STAGE: Cross-encoder re-ranking ===")
+        reranked_chunks = self._rerank_with_cross_encoder(
+            question=question,
+            chunks=unique_retrieved,
+            top_k=SECOND_STAGE_TOP_K
+        )
         
-        # Step 6: Compute confidence
-        confidence = self._compute_confidence(unique_retrieved)
+        logger.info(f"Using top {len(reranked_chunks)} re-ranked chunks for context")
+        
+        # Step 6: Build tagged context with re-ranked chunks
+        context, source_map = self._build_tagged_context(reranked_chunks)
+        
+        # Step 7: Compute confidence
+        confidence = self._compute_confidence(reranked_chunks)
 
-        # Step 7: Generate JSON answer
+        # Step 8: Generate JSON answer
         logger.info(f"Generating {question_type} answer with LLM...")
         prompt = self._create_type_specific_prompt(question, context, question_type)
         
@@ -667,7 +758,12 @@ Return ONLY valid JSON, no other text:"""
                 "json_response": json_response,
                 "sources": source_map,
                 "confidence": confidence,
-                "question_type": question_type
+                "question_type": question_type,
+                "retrieval_stats": {
+                    "first_stage_retrieved": len(all_retrieved),
+                    "after_dedup": len(unique_retrieved),
+                    "after_reranking": len(reranked_chunks),
+                }
             }
             
         except json.JSONDecodeError as e:
