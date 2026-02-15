@@ -468,40 +468,52 @@ CONTEXT WITH SOURCE TAGS:
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object following this EXACT structure:
+Return a JSON object with ONLY the sections that are relevant to answer this specific question.
 
+GUIDELINES FOR SECTION INCLUSION:
+
+1. "Types of [Topic]" - Include ONLY if:
+   ✅ Question asks about types/subtypes of a DISEASE or CONDITION
+   ✅ Examples: "What is thyroid cancer?" "What is DTC?"
+   ❌ Skip if question is about: diagnostic tools, procedures, biomarkers, or "role/purpose"
+   ❌ Examples to SKIP: "What is the role of ultrasound?" "What is FNAB used for?"
+
+2. "Key Features" or "Clinical Applications" - Use for:
+   ✅ Diagnostic tools (ultrasound, FNAB, imaging)
+   ✅ Procedures or interventions
+   ✅ "What is the role of X?" questions
+
+3. "Causes and Risk Factors" - Include if:
+   ✅ Question is about a disease/condition with known causes
+   ❌ Skip if question is about diagnostic tools or procedures
+
+4. "Common Symptoms" - Include if:
+   ✅ Question is about a disease/condition with symptoms
+   ❌ Skip if question is about diagnostic procedures or lab tests
+
+5. "Diagnosis and Treatment" - Include if relevant to the question
+
+STRUCTURE:
 {{
-  "overview": "2-3 sentence definition with [SOURCE_X] tags explaining what this is, who it affects, and general outlook",
+  "overview": "2-3 sentence answer with [SOURCE_X] tags",
   "sections": [
+    // Only include sections that help answer THIS specific question
+    // Use appropriate headers based on the question context
     {{
-      "header": "Types of [Topic]",
-      "items": [
-        {{
-          "name": "Type Name",
-          "description": "Explanation with [SOURCE_X] tags",
-          "details": "Additional details like percentages, prognosis with [SOURCE_X] tags"
-        }}
-      ]
-    }},
-    {{
-      "header": "Causes and Risk Factors",
-      "content": "Paragraph explaining causes with [SOURCE_X] tags"
-    }},
-    {{
-      "header": "Common Symptoms",
-      "items": [
-        {{
-          "symptom": "Symptom name",
-          "description": "Explanation with [SOURCE_X] tags"
-        }}
-      ]
-    }},
-    {{
-      "header": "Diagnosis and Treatment",
-      "content": "Paragraph explaining diagnostic and treatment approaches with [SOURCE_X] tags"
+      "header": "Appropriate Section Header",
+      "items": [...] OR "content": "..."
     }}
   ]
 }}
+
+EXAMPLES:
+
+Q: "What is papillary thyroid cancer?"
+→ Include: Types, Causes, Symptoms, Diagnosis ✅
+
+Q: "What is the role of ultrasound in thyroid nodules?"
+→ Include: Key Features, Clinical Applications, Diagnostic Pathway ✅
+→ Skip: Types (ultrasound isn't a disease with subtypes) ❌
 
 Return ONLY valid JSON, no other text:"""
 
@@ -509,43 +521,36 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object following this EXACT structure:
+Return a JSON object with relevant complication categories for this question.
 
+GUIDELINES:
+
+1. Group complications by severity/frequency if information is available:
+   - Common & Temporary
+   - Less Common & Potentially Permanent
+   - Rare but Serious
+
+2. If grouping isn't clear from sources, use a single "Complications" section
+
+3. Include "Management & Prevention" if sources discuss it
+
+4. Skip sections that aren't supported by the source material
+
+STRUCTURE:
 {{
-  "overview": "2-3 sentence summary of complications with [SOURCE_X] tags",
+  "overview": "2-3 sentence summary with [SOURCE_X] tags",
   "sections": [
     {{
-      "header": "Common & Temporary Complications",
+      "header": "Appropriate Category",
       "items": [
         {{
           "complication": "Name",
-          "description": "Full explanation with frequencies/percentages and [SOURCE_X] tags",
-          "frequency": "How common (if mentioned)"
+          "description": "Full explanation with [SOURCE_X] tags",
+          "frequency": "How common (if mentioned, otherwise omit)"
         }}
       ]
-    }},
-    {{
-      "header": "Less Common & Potentially Permanent Issues",
-      "items": [
-        {{
-          "complication": "Name",
-          "description": "Explanation with [SOURCE_X] tags"
-        }}
-      ]
-    }},
-    {{
-      "header": "Rare but Serious Complications",
-      "items": [
-        {{
-          "complication": "Name",
-          "description": "Explanation with [SOURCE_X] tags"
-        }}
-      ]
-    }},
-    {{
-      "header": "Management & Prevention",
-      "content": "Paragraph about management strategies with [SOURCE_X] tags"
     }}
+    // Add more sections as needed
   ]
 }}
 
@@ -555,8 +560,16 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object following this EXACT structure:
+Return a JSON object comparing the items in the question.
 
+GUIDELINES:
+
+1. Include "Key Differences" section with comparison table OR bullet points
+2. Include "Shared Characteristics" if relevant
+3. Include "Outcomes" or "Clinical Implications" if discussed in sources
+4. Skip sections not supported by source material
+
+STRUCTURE:
 {{
   "overview": "2-3 sentence comparison summary with [SOURCE_X] tags",
   "sections": [
@@ -565,19 +578,17 @@ Return a JSON object following this EXACT structure:
       "comparison_table": [
         {{
           "aspect": "Aspect being compared",
-          "option_a": "Description for first option with [SOURCE_X]",
-          "option_b": "Description for second option with [SOURCE_X]"
+          "option_a": "Description with [SOURCE_X]",
+          "option_b": "Description with [SOURCE_X]"
         }}
       ]
+      // OR use "items" for bullet point format if table doesn't fit
     }},
     {{
       "header": "Shared Characteristics",
-      "content": "Paragraph explaining similarities with [SOURCE_X] tags"
-    }},
-    {{
-      "header": "Outcomes",
-      "content": "Paragraph about comparative outcomes with [SOURCE_X] tags"
+      "content": "Paragraph with [SOURCE_X] tags"
     }}
+    // Add other relevant sections
   ]
 }}
 
@@ -587,33 +598,30 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object following this EXACT structure:
+Return a JSON object with relevant treatment information for this question.
 
+GUIDELINES:
+
+1. Group treatments logically (e.g., by type, by cancer stage, by line of therapy)
+2. Common categories: "Standard Treatments", "Advanced/Emerging Treatments", "Treatment by Stage"
+3. Include "Treatment Selection" or "Guidelines" if discussed
+4. Skip categories not supported by sources
+
+STRUCTURE:
 {{
-  "overview": "2-3 sentence summary of treatment approaches with [SOURCE_X] tags",
+  "overview": "2-3 sentence summary with [SOURCE_X] tags",
   "sections": [
     {{
-      "header": "Common Treatments",
+      "header": "Appropriate Category",
       "items": [
         {{
           "treatment": "Treatment name",
-          "description": "Full explanation with indications and [SOURCE_X] tags"
+          "description": "Full explanation with [SOURCE_X] tags"
         }}
       ]
-    }},
-    {{
-      "header": "Advanced Treatments",
-      "items": [
-        {{
-          "treatment": "Treatment name",
-          "description": "Explanation with [SOURCE_X] tags"
-        }}
-      ]
-    }},
-    {{
-      "header": "Treatment by Cancer Type",
-      "content": "Paragraph explaining type-specific approaches with [SOURCE_X] tags"
+      // OR use "content" for paragraph format
     }}
+    // Add relevant sections
   ]
 }}
 
@@ -623,25 +631,31 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object following this EXACT structure:
+Return a JSON object with relevant diagnostic information for this question.
 
+GUIDELINES:
+
+1. For questions about diagnostic tools: focus on their clinical applications, key features, what they detect
+2. For questions about diagnostic process: include pathway, procedures, and interpretation
+3. Include accuracy/performance metrics if mentioned in sources
+4. Skip sections not supported by sources
+
+STRUCTURE:
 {{
-  "overview": "2-3 sentence summary of diagnostic approach with [SOURCE_X] tags",
+  "overview": "2-3 sentence summary with [SOURCE_X] tags",
   "sections": [
     {{
-      "header": "Key Diagnostic Procedures",
+      "header": "Key Diagnostic Procedures" OR "Clinical Applications" OR appropriate header,
       "items": [
         {{
-          "procedure": "Procedure name",
+          "procedure": "Procedure name" OR "feature": "Feature name",
           "description": "What it does, when used, with [SOURCE_X] tags",
           "accuracy": "Accuracy info if mentioned"
         }}
       ]
-    }},
-    {{
-      "header": "Diagnostic Pathway",
-      "content": "Paragraph explaining step-by-step process with [SOURCE_X] tags"
+      // OR use "content" for paragraph format
     }}
+    // Add relevant sections like "Diagnostic Pathway", "Interpretation", etc.
   ]
 }}
 
@@ -651,29 +665,30 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object following this EXACT structure:
+Return a JSON object with relevant timing/indication information for this question.
 
+GUIDELINES:
+
+1. Include "Key Indications" when sources discuss when something should be done
+2. Include "Important Considerations" or "Contraindications" if discussed
+3. Include "Guidelines" if specific recommendations exist
+4. Skip sections not supported by sources
+
+STRUCTURE:
 {{
-  "overview": "2-3 sentence summary of when/why recommended with [SOURCE_X] tags",
+  "overview": "2-3 sentence summary with [SOURCE_X] tags",
   "sections": [
     {{
-      "header": "Key Indications",
+      "header": "Key Indications" OR "When Recommended",
       "items": [
         {{
           "indication": "Situation/condition",
-          "explanation": "Why recommended in this case with [SOURCE_X] tags"
+          "explanation": "Why recommended with [SOURCE_X] tags"
         }}
       ]
-    }},
-    {{
-      "header": "Important Considerations",
-      "items": [
-        {{
-          "consideration": "Factor name",
-          "description": "Explanation with [SOURCE_X] tags"
-        }}
-      ]
+      // OR use "content" for paragraph format
     }}
+    // Add relevant sections
   ]
 }}
 
