@@ -12,6 +12,9 @@ def setup_page():
 # Add this to your ui/layout.py file
 # Update your inject_custom_css() function with this:
 
+# Add this to your ui/layout.py file
+# Update your inject_custom_css() function with this:
+
 def inject_custom_css():
     """Inject custom CSS for citations and collapsible sources."""
     st.markdown("""
@@ -175,37 +178,6 @@ def inject_custom_css():
         border-bottom: 1px solid #0d5ea8;
     }
 
-    /* ===== AI OVERVIEW BOX ===== */
-    .ai-overview {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 18px 22px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-
-    .ai-overview strong {
-        display: block;
-        font-size: 18px;
-        margin-bottom: 10px;
-        letter-spacing: 0.3px;
-    }
-
-    .ai-overview a.citation-link {
-        color: #fff;
-        border-bottom-color: rgba(255, 255, 255, 0.5);
-        font-weight: 700;
-        background-color: rgba(255, 255, 255, 0.1);
-        padding: 1px 4px;
-        border-radius: 3px;
-    }
-
-    .ai-overview a.citation-link:hover {
-        background-color: rgba(255, 255, 255, 0.25);
-        border-bottom-color: #fff;
-    }
-
     /* ===== SMOOTH SCROLLING ===== */
     html {
         scroll-behavior: smooth;
@@ -234,10 +206,6 @@ def inject_custom_css():
         .source-item {
             font-size: 13px;
             padding: 8px 10px;
-        }
-        
-        .ai-overview {
-            padding: 14px 16px;
         }
     }
     </style>
