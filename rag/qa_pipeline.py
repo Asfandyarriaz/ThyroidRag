@@ -468,9 +468,11 @@ CONTEXT WITH SOURCE TAGS:
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object with ONLY the sections that are relevant to answer this specific question.
+Return a JSON object with 2-4 relevant sections that fully answer this question.
 
-GUIDELINES FOR SECTION INCLUSION:
+IMPORTANT: You MUST include at least 2 sections. Do not return just the overview.
+
+GUIDELINES FOR SECTION SELECTION:
 
 1. "Types of [Topic]" - Include ONLY if:
    ✅ Question asks about types/subtypes of a DISEASE or CONDITION
@@ -478,10 +480,11 @@ GUIDELINES FOR SECTION INCLUSION:
    ❌ Skip if question is about: diagnostic tools, procedures, biomarkers, or "role/purpose"
    ❌ Examples to SKIP: "What is the role of ultrasound?" "What is FNAB used for?"
 
-2. "Key Features" or "Clinical Applications" - Use for:
+2. "Clinical Applications" OR "Key Features" - Use for:
    ✅ Diagnostic tools (ultrasound, FNAB, imaging)
    ✅ Procedures or interventions
    ✅ "What is the role of X?" questions
+   ✅ Example sections: "Clinical Applications", "Key Features Evaluated", "Diagnostic Utility"
 
 3. "Causes and Risk Factors" - Include if:
    ✅ Question is about a disease/condition with known causes
@@ -491,29 +494,34 @@ GUIDELINES FOR SECTION INCLUSION:
    ✅ Question is about a disease/condition with symptoms
    ❌ Skip if question is about diagnostic procedures or lab tests
 
-5. "Diagnosis and Treatment" - Include if relevant to the question
+5. "Diagnosis and Treatment" OR "Clinical Pathway" - Include if relevant
 
-STRUCTURE:
+REQUIRED STRUCTURE:
 {{
   "overview": "2-3 sentence answer with [SOURCE_X] tags",
   "sections": [
-    // Only include sections that help answer THIS specific question
-    // Use appropriate headers based on the question context
+    // MUST include 2-4 sections that help answer this question
+    // Choose appropriate headers based on question context
     {{
       "header": "Appropriate Section Header",
       "items": [...] OR "content": "..."
+    }},
+    {{
+      "header": "Another Relevant Section",
+      "items": [...] OR "content": "..."
     }}
+    // Add 0-2 more sections if helpful
   ]
 }}
 
 EXAMPLES:
 
 Q: "What is papillary thyroid cancer?"
-→ Include: Types, Causes, Symptoms, Diagnosis ✅
+→ Include: Types, Causes, Symptoms, Diagnosis (4 sections) ✅
 
 Q: "What is the role of ultrasound in thyroid nodules?"
-→ Include: Key Features, Clinical Applications, Diagnostic Pathway ✅
-→ Skip: Types (ultrasound isn't a disease with subtypes) ❌
+→ Include: Clinical Applications, Key Features Evaluated (2-3 sections) ✅
+→ Skip: Types (not a disease) ❌
 
 Return ONLY valid JSON, no other text:"""
 
@@ -521,27 +529,33 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object with relevant complication categories for this question.
+Return a JSON object with 2-4 relevant complication sections that fully answer this question.
+
+IMPORTANT: You MUST include at least 2 sections. Do not return just the overview.
 
 GUIDELINES:
 
 1. Group complications by severity/frequency if information is available:
-   - Common & Temporary
-   - Less Common & Potentially Permanent
-   - Rare but Serious
+   - "Common & Temporary Complications"
+   - "Less Common & Potentially Permanent Issues"
+   - "Rare but Serious Complications"
 
-2. If grouping isn't clear from sources, use a single "Complications" section
+2. If severity grouping isn't clear, use descriptive categories like:
+   - "Major Complications"
+   - "Minor Complications"
+   - "Long-term Effects"
 
 3. Include "Management & Prevention" if sources discuss it
 
-4. Skip sections that aren't supported by the source material
+4. Always include at least 2 complication categories
 
-STRUCTURE:
+REQUIRED STRUCTURE:
 {{
   "overview": "2-3 sentence summary with [SOURCE_X] tags",
   "sections": [
+    // MUST include 2-4 sections
     {{
-      "header": "Appropriate Category",
+      "header": "Appropriate Complication Category",
       "items": [
         {{
           "complication": "Name",
@@ -549,8 +563,12 @@ STRUCTURE:
           "frequency": "How common (if mentioned, otherwise omit)"
         }}
       ]
+    }},
+    {{
+      "header": "Another Complication Category",
+      "items": [...]
     }}
-    // Add more sections as needed
+    // Add more sections as appropriate
   ]
 }}
 
@@ -560,19 +578,22 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object comparing the items in the question.
+Return a JSON object with 2-3 relevant comparison sections that fully answer this question.
+
+IMPORTANT: You MUST include at least 2 sections. Do not return just the overview.
 
 GUIDELINES:
 
-1. Include "Key Differences" section with comparison table OR bullet points
-2. Include "Shared Characteristics" if relevant
+1. Always include "Key Differences" section with comparison table OR bullet points
+2. Include "Shared Characteristics" or "Similarities" if relevant
 3. Include "Outcomes" or "Clinical Implications" if discussed in sources
-4. Skip sections not supported by source material
+4. Include at least 2 sections total
 
-STRUCTURE:
+REQUIRED STRUCTURE:
 {{
   "overview": "2-3 sentence comparison summary with [SOURCE_X] tags",
   "sections": [
+    // MUST include 2-3 sections
     {{
       "header": "Key Differences",
       "comparison_table": [
@@ -585,10 +606,10 @@ STRUCTURE:
       // OR use "items" for bullet point format if table doesn't fit
     }},
     {{
-      "header": "Shared Characteristics",
+      "header": "Shared Characteristics" OR "Outcomes",
       "content": "Paragraph with [SOURCE_X] tags"
     }}
-    // Add other relevant sections
+    // Add another section if helpful
   ]
 }}
 
@@ -598,21 +619,24 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object with relevant treatment information for this question.
+Return a JSON object with 2-3 relevant treatment sections that fully answer this question.
+
+IMPORTANT: You MUST include at least 2 sections. Do not return just the overview.
 
 GUIDELINES:
 
 1. Group treatments logically (e.g., by type, by cancer stage, by line of therapy)
 2. Common categories: "Standard Treatments", "Advanced/Emerging Treatments", "Treatment by Stage"
 3. Include "Treatment Selection" or "Guidelines" if discussed
-4. Skip categories not supported by sources
+4. Always include at least 2 treatment categories
 
-STRUCTURE:
+REQUIRED STRUCTURE:
 {{
   "overview": "2-3 sentence summary with [SOURCE_X] tags",
   "sections": [
+    // MUST include 2-3 sections
     {{
-      "header": "Appropriate Category",
+      "header": "Appropriate Treatment Category",
       "items": [
         {{
           "treatment": "Treatment name",
@@ -620,8 +644,12 @@ STRUCTURE:
         }}
       ]
       // OR use "content" for paragraph format
+    }},
+    {{
+      "header": "Another Treatment Category",
+      "items": [...] OR "content": "..."
     }}
-    // Add relevant sections
+    // Add another section if helpful
   ]
 }}
 
@@ -631,31 +659,45 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object with relevant diagnostic information for this question.
+Return a JSON object with 2-3 relevant diagnostic sections that fully answer this question.
+
+IMPORTANT: You MUST include at least 2 sections. Do not return just the overview.
 
 GUIDELINES:
 
 1. For questions about diagnostic tools: focus on their clinical applications, key features, what they detect
 2. For questions about diagnostic process: include pathway, procedures, and interpretation
 3. Include accuracy/performance metrics if mentioned in sources
-4. Skip sections not supported by sources
+4. Always include at least 2 diagnostic sections
 
-STRUCTURE:
+Common section headers:
+- "Clinical Applications" (for tool usage questions)
+- "Key Features Evaluated" (for imaging/diagnostic tools)
+- "Diagnostic Procedures" (for process questions)
+- "Diagnostic Pathway" (for step-by-step process)
+- "Interpretation and Findings" (for test results)
+
+REQUIRED STRUCTURE:
 {{
   "overview": "2-3 sentence summary with [SOURCE_X] tags",
   "sections": [
+    // MUST include 2-3 sections
     {{
-      "header": "Key Diagnostic Procedures" OR "Clinical Applications" OR appropriate header,
+      "header": "Appropriate Section Header",
       "items": [
         {{
-          "procedure": "Procedure name" OR "feature": "Feature name",
+          "procedure": "Name" OR "feature": "Name" OR "application": "Name",
           "description": "What it does, when used, with [SOURCE_X] tags",
           "accuracy": "Accuracy info if mentioned"
         }}
       ]
       // OR use "content" for paragraph format
+    }},
+    {{
+      "header": "Another Relevant Section",
+      "items": [...] OR "content": "..."
     }}
-    // Add relevant sections like "Diagnostic Pathway", "Interpretation", etc.
+    // Add another section if helpful
   ]
 }}
 
@@ -665,19 +707,22 @@ Return ONLY valid JSON, no other text:"""
             return base_instructions + f"""
 QUESTION: {question}
 
-Return a JSON object with relevant timing/indication information for this question.
+Return a JSON object with 2-3 relevant timing/indication sections that fully answer this question.
+
+IMPORTANT: You MUST include at least 2 sections. Do not return just the overview.
 
 GUIDELINES:
 
 1. Include "Key Indications" when sources discuss when something should be done
 2. Include "Important Considerations" or "Contraindications" if discussed
-3. Include "Guidelines" if specific recommendations exist
-4. Skip sections not supported by sources
+3. Include "Guidelines" or "Clinical Recommendations" if specific recommendations exist
+4. Always include at least 2 sections
 
-STRUCTURE:
+REQUIRED STRUCTURE:
 {{
   "overview": "2-3 sentence summary with [SOURCE_X] tags",
   "sections": [
+    // MUST include 2-3 sections
     {{
       "header": "Key Indications" OR "When Recommended",
       "items": [
@@ -687,8 +732,12 @@ STRUCTURE:
         }}
       ]
       // OR use "content" for paragraph format
+    }},
+    {{
+      "header": "Important Considerations" OR "Guidelines",
+      "items": [...] OR "content": "..."
     }}
-    // Add relevant sections
+    // Add another section if helpful
   ]
 }}
 
