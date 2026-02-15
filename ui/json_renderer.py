@@ -86,11 +86,9 @@ class JSONRenderer:
         overview = self.json_response.get("overview", "")
         overview_with_citations = self._replace_source_tags(overview)
         
-        return f"""<div class="ai-overview">
-<strong>AI Overview</strong>
+        return f"""**AI Overview**
 
 {overview_with_citations}
-</div>
 
 ---
 """
