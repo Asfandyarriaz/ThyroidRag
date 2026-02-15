@@ -16,8 +16,8 @@ class JSONRenderer:
     
     def _replace_source_tags(self, text: str) -> str:
         """
-        Replace [SOURCE_X] tags with clickable superscript citations.
-        Example: "text [SOURCE_1]" -> "text <sup>[1]</sup>"
+        Replace [SOURCE_X] tags with clickable anchor-linked citations.
+        Example: "text [SOURCE_1]" -> "text <a href='#source-1'>[1]</a>"
         """
         if not text:
             return ""
@@ -33,29 +33,64 @@ class JSONRenderer:
                 source = self.sources[source_key]
                 title = source.get('title', 'Unknown')
                 year = source.get('year', '')
-                pmid = source.get('pmid', '')
                 
-                # Create tooltip with source info
-                tooltip = f"{title} ({year})"
-                if pmid and pmid != "Unknown":
-                    tooltip += f" | PMID: {pmid}"
-                
-                # Return markdown with tooltip (Streamlit will render this)
-                return f'<sup><span title="{tooltip}">[{source_num}]</span></sup>'
+                # Create clickable citation that opens details and scrolls to source
+                # Using onclick to expand the details element
+                return (
+                    f'<a href="#source-{source_num}" '
+                    f'class="citation-link" '
+                    f'onclick="document.getElementById(\'sources-section\').open=true;" '
+                    f'title="{title} ({year})">'
+                    f'[{source_num}]</a>'
+                )
             else:
-                return f'<sup>[{source_num}]</sup>'
+                return f'[{source_num}]'
         
         result = re.sub(pattern, replacement, text)
         return result
+    
+    def _clean_frequency(self, freq: str) -> str:
+        """
+        Remove 'Not quantified in available excerpts' and similar phrases.
+        Returns empty string if that's all the frequency contained.
+        """
+        if not freq:
+            return ""
+        
+        # List of phrases to remove
+        unwanted_phrases = [
+            "Not quantified in available excerpts",
+            "Not specified",
+            "Not mentioned",
+            "Not quantified",
+            "(Not specified)",
+            "(Not quantified)",
+        ]
+        
+        cleaned = freq
+        for phrase in unwanted_phrases:
+            cleaned = cleaned.replace(phrase, "")
+        
+        # Clean up whitespace
+        cleaned = cleaned.strip()
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        
+        # If nothing left or just parentheses, return empty
+        if not cleaned or cleaned in ['()', '( )']:
+            return ""
+        
+        return cleaned
     
     def _render_overview(self) -> str:
         """Render the overview section."""
         overview = self.json_response.get("overview", "")
         overview_with_citations = self._replace_source_tags(overview)
         
-        return f"""**AI Overview**
+        return f"""<div class="ai-overview">
+<strong>AI Overview</strong>
 
 {overview_with_citations}
+</div>
 
 ---
 """
@@ -63,7 +98,7 @@ class JSONRenderer:
     def _render_section_definition(self, section: Dict) -> str:
         """Render sections for definition-type questions."""
         header = section.get("header", "")
-        lines = [f"**{header}**"]
+        lines = [f"**{header}**\n"]
         
         # Check if this section has items (bullet points)
         if "items" in section:
@@ -75,75 +110,72 @@ class JSONRenderer:
                         desc = self._replace_source_tags(item.get("description", ""))
                         details = self._replace_source_tags(item.get("details", ""))
                         
-                        lines.append(f"* **{name}**: {desc}")
+                        lines.append(f"**{name}**: {desc}")
                         if details:
-                            lines.append(f"  {details}")
+                            lines.append(f"{details}")
+                        lines.append("")  # Spacing
                     
                     elif "symptom" in item:  # Symptoms section
                         symptom = item.get("symptom", "")
                         desc = self._replace_source_tags(item.get("description", ""))
-                        lines.append(f"* **{symptom}**: {desc}")
+                        lines.append(f"**{symptom}**: {desc}")
+                        lines.append("")
                     
                     elif "complication" in item:  # Complications
                         comp = item.get("complication", "")
                         desc = self._replace_source_tags(item.get("description", ""))
-                        freq = item.get("frequency", "")
+                        freq = self._clean_frequency(item.get("frequency", ""))
                         
                         if freq:
-                            lines.append(f"* **{comp}** ({freq}): {desc}")
+                            lines.append(f"**{comp}** ({freq}): {desc}")
                         else:
-                            lines.append(f"* **{comp}**: {desc}")
+                            lines.append(f"**{comp}**: {desc}")
+                        lines.append("")
         
         # Check if this section has content (paragraph)
         elif "content" in section:
             content = self._replace_source_tags(section.get("content", ""))
-            lines.append(f"\n{content}")
+            lines.append(f"{content}")
+            lines.append("")
         
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines)
     
     def _render_section_complications(self, section: Dict) -> str:
         """Render sections for complications-type questions."""
         header = section.get("header", "")
-        lines = [f"**{header}**"]
+        lines = [f"**{header}**\n"]
         
         if "items" in section:
             for item in section["items"]:
                 if isinstance(item, dict):
                     comp = item.get("complication", "")
                     desc = self._replace_source_tags(item.get("description", ""))
-                    freq = item.get("frequency", "")
+                    freq = self._clean_frequency(item.get("frequency", ""))
                     
                     if freq:
-                        lines.append(f"* **{comp}** ({freq}): {desc}")
+                        lines.append(f"**{comp}** ({freq}): {desc}")
                     else:
-                        lines.append(f"* **{comp}**: {desc}")
+                        lines.append(f"**{comp}**: {desc}")
+                    lines.append("")
         
         elif "content" in section:
             content = self._replace_source_tags(section.get("content", ""))
-            lines.append(f"\n{content}")
+            lines.append(f"{content}")
+            lines.append("")
         
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines)
     
     def _render_section_comparison(self, section: Dict) -> str:
         """Render sections for comparison-type questions."""
         header = section.get("header", "")
-        lines = [f"**{header}**"]
+        lines = [f"**{header}**\n"]
         
         # Check for comparison table
         if "comparison_table" in section:
             table = section["comparison_table"]
             
             if table and len(table) > 0:
-                # Get option names from first row
-                first_row = table[0]
-                option_a_name = "Option A"
-                option_b_name = "Option B"
-                
-                # Try to infer names from the comparison
-                # (You could enhance this by passing option names explicitly)
-                
                 # Create markdown table header
-                lines.append("")
                 lines.append("| Aspect | First Option | Second Option |")
                 lines.append("|--------|-------------|---------------|")
                 
@@ -158,32 +190,35 @@ class JSONRenderer:
         
         elif "content" in section:
             content = self._replace_source_tags(section.get("content", ""))
-            lines.append(f"\n{content}")
+            lines.append(f"{content}")
+            lines.append("")
         
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines)
     
     def _render_section_treatment(self, section: Dict) -> str:
         """Render sections for treatment-type questions."""
         header = section.get("header", "")
-        lines = [f"**{header}**"]
+        lines = [f"**{header}**\n"]
         
         if "items" in section:
             for item in section["items"]:
                 if isinstance(item, dict):
                     treatment = item.get("treatment", "")
                     desc = self._replace_source_tags(item.get("description", ""))
-                    lines.append(f"* **{treatment}**: {desc}")
+                    lines.append(f"**{treatment}**: {desc}")
+                    lines.append("")
         
         elif "content" in section:
             content = self._replace_source_tags(section.get("content", ""))
-            lines.append(f"\n{content}")
+            lines.append(f"{content}")
+            lines.append("")
         
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines)
     
     def _render_section_diagnosis(self, section: Dict) -> str:
         """Render sections for diagnosis-type questions."""
         header = section.get("header", "")
-        lines = [f"**{header}**"]
+        lines = [f"**{header}**\n"]
         
         if "items" in section:
             for item in section["items"]:
@@ -192,20 +227,22 @@ class JSONRenderer:
                     desc = self._replace_source_tags(item.get("description", ""))
                     accuracy = item.get("accuracy", "")
                     
-                    lines.append(f"* **{procedure}**: {desc}")
+                    lines.append(f"**{procedure}**: {desc}")
                     if accuracy:
-                        lines.append(f"  *Accuracy: {accuracy}*")
+                        lines.append(f"*Accuracy: {accuracy}*")
+                    lines.append("")
         
         elif "content" in section:
             content = self._replace_source_tags(section.get("content", ""))
-            lines.append(f"\n{content}")
+            lines.append(f"{content}")
+            lines.append("")
         
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines)
     
     def _render_section_timing(self, section: Dict) -> str:
         """Render sections for timing-type questions."""
         header = section.get("header", "")
-        lines = [f"**{header}**"]
+        lines = [f"**{header}**\n"]
         
         if "items" in section:
             for item in section["items"]:
@@ -215,17 +252,20 @@ class JSONRenderer:
                     
                     # Could be "indication" or "consideration"
                     if indication:
-                        lines.append(f"* **{indication}**: {explanation}")
+                        lines.append(f"**{indication}**: {explanation}")
+                        lines.append("")
                     elif "consideration" in item:
                         consideration = item.get("consideration", "")
                         desc = self._replace_source_tags(item.get("description", ""))
-                        lines.append(f"* **{consideration}**: {desc}")
+                        lines.append(f"**{consideration}**: {desc}")
+                        lines.append("")
         
         elif "content" in section:
             content = self._replace_source_tags(section.get("content", ""))
-            lines.append(f"\n{content}")
+            lines.append(f"{content}")
+            lines.append("")
         
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines)
     
     def render(self, question_type: str) -> str:
         """
@@ -260,16 +300,16 @@ class JSONRenderer:
     
     def render_sources(self) -> str:
         """
-        Render the sources section with expandable details.
+        Render the sources section as collapsible HTML details element.
         """
-        lines = ["**Key Sources:**\n"]
-        
         # Sort sources by number
         sorted_sources = sorted(
             self.sources.items(),
             key=lambda x: int(x[0].replace("SOURCE_", ""))
         )
         
+        # Build source list with anchor IDs
+        source_lines = []
         for source_key, source in sorted_sources:
             source_num = source_key.replace("SOURCE_", "")
             title = source.get("title", "Unknown")
@@ -277,33 +317,61 @@ class JSONRenderer:
             pmid = source.get("pmid", "")
             evidence_level = source.get("evidence_level", "")
             
-            # Format source line
-            source_line = f"**[{source_num}]** {title}"
+            # Format source line with anchor ID for scrolling
+            source_line = f'<div id="source-{source_num}" class="source-item">'
+            source_line += f"<strong>[{source_num}]</strong> {title}"
             
             if year and year != "Unknown":
                 source_line += f" ({year})"
             
             details = []
             if pmid and pmid != "Unknown":
-                details.append(f"PMID: {pmid}")
+                # Make PMID clickable link to PubMed
+                pmid_link = f'<a href="https://pubmed.ncbi.nlm.nih.gov/{pmid}/" target="_blank">PMID: {pmid}</a>'
+                details.append(pmid_link)
             if evidence_level and evidence_level != "Unknown":
                 details.append(f"Evidence Level: {evidence_level}")
             
             if details:
                 source_line += f" | {' | '.join(details)}"
             
-            lines.append(f"* {source_line}")
+            source_line += "</div>"
+            source_lines.append(source_line)
         
-        return "\n".join(lines)
-    
-    def render_confidence(self) -> str:
-        """Render confidence assessment."""
+        # Get confidence info
         label = self.confidence.get("label", "Unknown")
         score = self.confidence.get("score", 0)
         breakdown = self.confidence.get("breakdown", "")
         
-        return f"""---
+        # Build collapsible HTML details element
+        html = f"""
+<details id="sources-section" class="sources-collapsible">
+<summary class="sources-summary">📚 Show Sources</summary>
 
-**Evidence Quality:** {label} confidence ({score}/100)
+<div class="sources-content">
 
-*Based on: {breakdown}*"""
+<div class="evidence-quality">
+<strong>Evidence Quality:</strong> {label} confidence ({score}/100)
+<br>
+<em>Based on: {breakdown}</em>
+</div>
+
+<div class="sources-divider"></div>
+
+<div class="sources-list">
+<strong>Key Sources:</strong>
+<br><br>
+{'<br>'.join(source_lines)}
+</div>
+
+</div>
+</details>
+"""
+        
+        return html
+    
+    def render_confidence(self) -> str:
+        """
+        This is now included in render_sources(), so return empty.
+        """
+        return ""
