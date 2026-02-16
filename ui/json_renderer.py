@@ -8,10 +8,11 @@ class JSONRenderer:
     Converts structured JSON responses to markdown with clickable source citations.
     """
     
-    def __init__(self, json_response: Dict[str, Any], sources: Dict[str, Dict], confidence: Dict[str, Any]):
+    def __init__(self, json_response: Dict[str, Any], sources: Dict[str, Dict], confidence: Dict[str, Any], faithfulness: Dict[str, Any] = None):
         self.json_response = json_response
         self.sources = sources
         self.confidence = confidence
+        self.faithfulness = faithfulness or {}
         self.citation_count = 0
     
     def _replace_source_tags(self, text: str) -> str:
@@ -81,14 +82,57 @@ class JSONRenderer:
         
         return cleaned
     
+    def _render_faithfulness_badge(self) -> str:
+        """
+        Render faithfulness score badge.
+        
+        Returns:
+            HTML/markdown badge showing faithfulness score
+        """
+        if not self.faithfulness or self.faithfulness.get("score") is None:
+            # No faithfulness data or evaluation failed
+            error = self.faithfulness.get("error", "")
+            if error:
+                return '<div class="faithfulness-badge unavailable">⚠️ Faithfulness: Not Available</div>'
+            return ""  # Don't show anything if no data
+        
+        score = self.faithfulness.get("score", 0)
+        label = self.faithfulness.get("label", "Unknown")
+        percentage = int(score * 100)
+        
+        # Determine CSS class and icon based on score
+        if score >= 0.90:
+            css_class = "high"
+            icon = "✅"
+        elif score >= 0.70:
+            css_class = "medium"
+            icon = "⚠️"
+        else:
+            css_class = "low"
+            icon = "❌"
+        
+        # Build badge with tooltip
+        total = self.faithfulness.get("total_statements", 0)
+        evaluated = self.faithfulness.get("evaluated_statements", 0)
+        tooltip = f"{evaluated}/{total} statements verified"
+        
+        return f'''<div class="faithfulness-badge {css_class}" title="{tooltip}">
+{icon} <strong>Faithfulness:</strong> {percentage}% ({label})
+</div>'''
+    
     def _render_overview(self) -> str:
-        """Render the overview section."""
+        """Render the overview section with faithfulness score."""
         overview = self.json_response.get("overview", "")
         overview_with_citations = self._replace_source_tags(overview)
+        
+        # Add faithfulness score if available
+        faithfulness_badge = self._render_faithfulness_badge()
         
         return f"""**AI Overview**
 
 {overview_with_citations}
+
+{faithfulness_badge}
 
 ---
 """
