@@ -7,6 +7,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from sentence_transformers import CrossEncoder
 
+# Import faithfulness evaluator
+try:
+    from .faithfulness_evaluator import FaithfulnessEvaluator
+except ImportError:
+    # Handle relative import for when run as script
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    from faithfulness_evaluator import FaithfulnessEvaluator
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,11 @@ class QAPipeline:
         logger.info(f"Loading cross-encoder model: {cross_encoder_model}")
         self.cross_encoder = CrossEncoder(cross_encoder_model)
         logger.info("Cross-encoder loaded successfully")
+        
+        # Initialize faithfulness evaluator
+        logger.info("Initializing faithfulness evaluator")
+        self.faithfulness_evaluator = FaithfulnessEvaluator(self.llm)
+        logger.info("Faithfulness evaluator initialized")
 
     def _classify_question_type(self, question: str) -> str:
         """
@@ -801,10 +815,32 @@ Return ONLY valid JSON, no other text:"""
             
             json_response = json.loads(response)
             
+            # Step 9: Evaluate faithfulness
+            logger.info("Evaluating answer faithfulness...")
+            try:
+                faithfulness = self.faithfulness_evaluator.evaluate(
+                    json_response=json_response,
+                    tagged_context=context,
+                    source_map=source_map
+                )
+                logger.info(f"Faithfulness evaluation: {faithfulness.get('label', 'N/A')} "
+                           f"({faithfulness.get('score', 'N/A')})")
+            except Exception as e:
+                logger.error(f"Faithfulness evaluation failed: {e}", exc_info=True)
+                # Fallback: show answer anyway but mark faithfulness as unavailable
+                faithfulness = {
+                    "score": None,
+                    "label": "Not Available",
+                    "error": str(e),
+                    "total_statements": 0,
+                    "evaluated_statements": 0
+                }
+            
             return {
                 "json_response": json_response,
                 "sources": source_map,
                 "confidence": confidence,
+                "faithfulness": faithfulness,  # NEW: Add faithfulness to response
                 "question_type": question_type,
                 "retrieval_stats": {
                     "first_stage_retrieved": len(all_retrieved),
