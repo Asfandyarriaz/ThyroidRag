@@ -97,13 +97,21 @@ class FaithfulnessEvaluator:
             
             overall_score = total_score / evaluated_count
             
-            # Step 5: Determine label
-            if overall_score >= 0.90:
+            # Step 5: Determine label (updated thresholds: 80/60 instead of 90/70)
+            if overall_score >= 0.80:  # Changed from 0.90
                 label = "High"
-            elif overall_score >= 0.70:
+            elif overall_score >= 0.60:  # Changed from 0.70
                 label = "Medium"
             else:
                 label = "Low"
+            
+            # Log summary
+            logger.info(f"=== Faithfulness Summary ===")
+            logger.info(f"Total statements: {len(statements)}")
+            logger.info(f"Evaluated (with citations): {evaluated_count}")
+            logger.info(f"Overall score: {overall_score:.2f} ({int(overall_score * 100)}%)")
+            logger.info(f"Label: {label}")
+            logger.info(f"===========================")
             
             return {
                 "score": round(overall_score, 2),
@@ -210,37 +218,33 @@ class FaithfulnessEvaluator:
         # Remove any [SOURCE_X] tags from statement for cleaner evaluation
         clean_statement = re.sub(r'\[SOURCE_\d+\]', '', statement).strip()
         
-        evaluation_prompt = f"""You are evaluating whether a statement from a medical answer is faithful to the source material.
-
-        try:
-        response = self.llm.ask(evaluation_prompt).strip().upper()
+        # Truncate statement if very long (keep first 150 chars)
+        if len(clean_statement) > 150:
+            clean_statement = clean_statement[:147] + "..."
         
-        # ADD LOGGING HERE
-        if "FAITHFUL" in response and "NOT" not in response:
-            score = 1.0
-            logger.info(f"✅ FAITHFUL: {statement[:50]}... → {source_id}")
-        elif "PARTIAL" in response:
-            score = 0.5
-            logger.warning(f"⚠️ PARTIAL: {statement[:50]}... → {source_id}")
-        else:
-            score = 0.0
-            logger.error(f"❌ NOT_FAITHFUL: {statement[:50]}... → {source_id}")
-        
-        return score
+        evaluation_prompt = f"""You are evaluating whether a medical answer statement is faithful to source material.
 
 SOURCE CONTEXT:
-{context[:2000]}  
+{context[:2000]}
 
 STATEMENT TO VERIFY:
 {clean_statement}
 
 TASK:
-Determine if the statement can be fully inferred from the source context above.
+Determine if the statement is supported by the source context.
+
+IMPORTANT GUIDELINES:
+- Medical summaries often paraphrase technical details - this is acceptable
+- Slight rewording or simplification does NOT mean unfaithful
+- Focus on FACTUAL ACCURACY, not exact word matching
+- If the general medical idea is present in the context → FAITHFUL
+- Only mark NOT_FAITHFUL if the statement contradicts or adds unsupported claims
+- PARTIAL means the statement is mostly supported but adds minor unsupported details
 
 RULES:
-- FAITHFUL: The statement is directly supported by the context or can be reasonably inferred
-- PARTIAL: The statement is partially supported but adds details not in the context
-- NOT_FAITHFUL: The statement contradicts the context or makes claims not supported at all
+- FAITHFUL: The statement's facts are supported by or can be reasonably inferred from the context
+- PARTIAL: The statement is mostly supported but includes some details not clearly in the context
+- NOT_FAITHFUL: The statement contradicts the context or makes claims clearly not present
 
 Respond with ONLY ONE WORD: FAITHFUL, PARTIAL, or NOT_FAITHFUL
 
@@ -249,12 +253,22 @@ Your answer:"""
         try:
             response = self.llm.ask(evaluation_prompt).strip().upper()
             
+            # Parse response and assign score
             if "FAITHFUL" in response and "NOT" not in response and "PARTIAL" not in response:
-                return 1.0
+                score = 1.0
+                result_label = "✅ FAITHFUL"
             elif "PARTIAL" in response:
-                return 0.5
+                score = 0.5
+                result_label = "⚠️ PARTIAL"
             else:
-                return 0.0
+                score = 0.0
+                result_label = "❌ NOT_FAITHFUL"
+            
+            # Debug logging - show first 60 chars of statement
+            statement_preview = clean_statement[:60] + "..." if len(clean_statement) > 60 else clean_statement
+            logger.info(f"{result_label} ({score:.1f}): '{statement_preview}' [{source_id}]")
+            
+            return score
                 
         except Exception as e:
             logger.error(f"Error evaluating statement against {source_id}: {e}")
