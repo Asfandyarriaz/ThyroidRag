@@ -18,6 +18,9 @@ def setup_page():
 # Add this to your ui/layout.py file
 # Update your inject_custom_css() function with this:
 
+# Add this to your ui/layout.py file
+# Update your inject_custom_css() function with this:
+
 def inject_custom_css():
     """Inject custom CSS for citations and collapsible sources."""
     st.markdown("""
@@ -117,6 +120,60 @@ def inject_custom_css():
 
     .evidence-quality em {
         color: #558b2f;
+        font-size: 13px;
+    }
+
+    /* ===== FAITHFULNESS QUALITY BOX (in sources) ===== */
+    .faithfulness-quality {
+        padding: 12px 16px;
+        margin-bottom: 16px;
+        border-radius: 4px;
+        font-size: 14px;
+        line-height: 1.6;
+    }
+
+    .faithfulness-quality.high {
+        background-color: #d4edda;
+        border-left: 4px solid #28a745;
+        color: #155724;
+    }
+
+    .faithfulness-quality.high strong {
+        color: #155724;
+    }
+
+    .faithfulness-quality.high em {
+        color: #1e7e34;
+        font-size: 13px;
+    }
+
+    .faithfulness-quality.medium {
+        background-color: #fff3cd;
+        border-left: 4px solid #ffc107;
+        color: #856404;
+    }
+
+    .faithfulness-quality.medium strong {
+        color: #856404;
+    }
+
+    .faithfulness-quality.medium em {
+        color: #a07800;
+        font-size: 13px;
+    }
+
+    .faithfulness-quality.low {
+        background-color: #f8d7da;
+        border-left: 4px solid #dc3545;
+        color: #721c24;
+    }
+
+    .faithfulness-quality.low strong {
+        color: #721c24;
+    }
+
+    .faithfulness-quality.low em {
+        color: #8b2332;
         font-size: 13px;
     }
 
