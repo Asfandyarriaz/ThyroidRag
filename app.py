@@ -216,7 +216,7 @@ def apply_mode_hint(user_text: str) -> str:
 
 def format_answer_from_json(result: dict) -> str:
     """
-    Convert JSON response to markdown with citations.
+    Convert JSON response to markdown with citations and faithfulness.
     """
     if "error" in result:
         return f"⚠️ {result['error']}"
@@ -224,21 +224,23 @@ def format_answer_from_json(result: dict) -> str:
     json_response = result.get("json_response")
     sources = result.get("sources", {})
     confidence = result.get("confidence", {})
+    faithfulness = result.get("faithfulness", {})  # NEW: Get faithfulness data
     question_type = result.get("question_type", "definition")
     
     if not json_response:
         return "Unable to generate a structured response."
     
     # Use renderer to convert JSON to markdown
-    renderer = JSONRenderer(json_response, sources, confidence)
+    # UPDATED: Pass faithfulness as 4th parameter
+    renderer = JSONRenderer(json_response, sources, confidence, faithfulness)
     
     # Render main answer
     answer_md = renderer.render(question_type)
     
-    # Render confidence
+    # Render confidence (now deprecated, returns empty)
     confidence_md = renderer.render_confidence()
     
-    # Render sources in expandable section
+    # Render sources in expandable section (now includes faithfulness)
     sources_md = renderer.render_sources()
     
     # Combine
