@@ -121,19 +121,57 @@ class JSONRenderer:
 {icon} <strong>Faithfulness:</strong> {percentage}% ({label})
 </div>'''
     
+    def _render_faithfulness_for_sources(self) -> str:
+        """
+        Render faithfulness as a quality box in sources section (similar to evidence quality).
+        
+        Returns:
+            HTML div showing faithfulness score, styled like evidence quality box
+        """
+        if not self.faithfulness or self.faithfulness.get("score") is None:
+            # No faithfulness data or evaluation failed
+            error = self.faithfulness.get("error", "")
+            if error:
+                return '''
+<div class="faithfulness-quality">
+<strong>Answer Faithfulness:</strong> Not Available
+<br>
+<em>Evaluation could not be completed</em>
+</div>'''
+            return ""  # Don't show anything if no data
+        
+        score = self.faithfulness.get("score", 0)
+        label = self.faithfulness.get("label", "Unknown")
+        percentage = int(score * 100)
+        
+        # Get details for description text
+        total = self.faithfulness.get("total_statements", 0)
+        evaluated = self.faithfulness.get("evaluated_statements", 0)
+        
+        # Determine color scheme based on score
+        if score >= 0.80:
+            color_class = "high"  # Green
+        elif score >= 0.60:
+            color_class = "medium"  # Yellow
+        else:
+            color_class = "low"  # Red
+        
+        # Build HTML div styled like evidence quality box
+        return f'''
+<div class="faithfulness-quality {color_class}">
+<strong>Answer Faithfulness:</strong> {percentage}% ({label})
+<br>
+<em>Based on: {evaluated}/{total} statements verified against sources</em>
+</div>'''
+    
     def _render_overview(self) -> str:
-        """Render the overview section with faithfulness score."""
+        """Render the overview section."""
         overview = self.json_response.get("overview", "")
         overview_with_citations = self._replace_source_tags(overview)
-        
-        # Add faithfulness score if available
-        faithfulness_badge = self._render_faithfulness_badge()
         
         return f"""**AI Overview**
 
 {overview_with_citations}
-
-{faithfulness_badge}
 
 ---
 """
@@ -386,6 +424,9 @@ class JSONRenderer:
         score = self.confidence.get("score", 0)
         breakdown = self.confidence.get("breakdown", "")
         
+        # Get faithfulness info if available
+        faithfulness_html = self._render_faithfulness_for_sources()
+        
         # Build collapsible HTML details element
         html = f"""
 <details id="sources-section" class="sources-collapsible">
@@ -398,6 +439,8 @@ class JSONRenderer:
 <br>
 <em>Based on: {breakdown}</em>
 </div>
+
+{faithfulness_html}
 
 <div class="sources-divider"></div>
 
