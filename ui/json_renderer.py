@@ -101,10 +101,11 @@ class JSONRenderer:
         percentage = int(score * 100)
         
         # Determine CSS class and icon based on score
-        if score >= 0.90:
+        # Updated thresholds: 80%+ = High, 60-79% = Medium, <60% = Low
+        if score >= 0.80:  # Changed from 0.90
             css_class = "high"
             icon = "✅"
-        elif score >= 0.70:
+        elif score >= 0.60:  # Changed from 0.70
             css_class = "medium"
             icon = "⚠️"
         else:
