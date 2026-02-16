@@ -15,6 +15,9 @@ def setup_page():
 # Add this to your ui/layout.py file
 # Update your inject_custom_css() function with this:
 
+# Add this to your ui/layout.py file
+# Update your inject_custom_css() function with this:
+
 def inject_custom_css():
     """Inject custom CSS for citations and collapsible sources."""
     st.markdown("""
@@ -190,6 +193,51 @@ def inject_custom_css():
 
     details.sources-collapsible {
         display: block;
+    }
+
+    /* ===== FAITHFULNESS BADGE ===== */
+    .faithfulness-badge {
+        display: inline-block;
+        margin-top: 12px;
+        padding: 10px 16px;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 500;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        transition: all 0.2s ease;
+    }
+
+    .faithfulness-badge strong {
+        font-weight: 600;
+    }
+
+    .faithfulness-badge.high {
+        background-color: #d4edda;
+        border-left: 4px solid #28a745;
+        color: #155724;
+    }
+
+    .faithfulness-badge.medium {
+        background-color: #fff3cd;
+        border-left: 4px solid #ffc107;
+        color: #856404;
+    }
+
+    .faithfulness-badge.low {
+        background-color: #f8d7da;
+        border-left: 4px solid #dc3545;
+        color: #721c24;
+    }
+
+    .faithfulness-badge.unavailable {
+        background-color: #e2e3e5;
+        border-left: 4px solid #6c757d;
+        color: #383d41;
+    }
+
+    .faithfulness-badge:hover {
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        transform: translateY(-1px);
     }
 
     /* ===== RESPONSIVE ===== */
