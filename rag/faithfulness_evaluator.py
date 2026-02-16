@@ -212,6 +212,22 @@ class FaithfulnessEvaluator:
         
         evaluation_prompt = f"""You are evaluating whether a statement from a medical answer is faithful to the source material.
 
+        try:
+        response = self.llm.ask(evaluation_prompt).strip().upper()
+        
+        # ADD LOGGING HERE
+        if "FAITHFUL" in response and "NOT" not in response:
+            score = 1.0
+            logger.info(f"✅ FAITHFUL: {statement[:50]}... → {source_id}")
+        elif "PARTIAL" in response:
+            score = 0.5
+            logger.warning(f"⚠️ PARTIAL: {statement[:50]}... → {source_id}")
+        else:
+            score = 0.0
+            logger.error(f"❌ NOT_FAITHFUL: {statement[:50]}... → {source_id}")
+        
+        return score
+
 SOURCE CONTEXT:
 {context[:2000]}  
 
